@@ -106,8 +106,25 @@ class PrizePicksScraper:
         self._league_cache: dict = {}
 
     def _get(self, url: str, params: dict = None, retries: int = 3) -> Optional[dict]:
-        """Resilient GET with retry."""
+        """Resilient GET with retry. Tries curl_cffi (Chrome TLS impersonation) first."""
         for attempt in range(retries):
+            # Try curl_cffi first (best anti-bot bypass)
+            try:
+                from curl_cffi import requests as cffi_req
+                r = cffi_req.get(
+                    url, params=params, headers=HEADERS,
+                    impersonate="chrome120", timeout=20,
+                )
+                if r.status_code not in (403, 429):
+                    time.sleep(2)
+                    return r.json()
+                log.warning(f"curl_cffi got {r.status_code} on attempt {attempt+1}: {url}")
+            except ImportError:
+                pass
+            except Exception as e:
+                log.warning(f"curl_cffi error: {e}")
+
+            # Fallback: plain requests
             try:
                 resp = self.session.get(url, params=params, timeout=15)
                 resp.raise_for_status()

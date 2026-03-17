@@ -510,6 +510,11 @@ def get_demo_audit():
 
 # ── Try importing live engine modules ─────────────────────────────────────
 ENGINE_AVAILABLE = False
+PP_SCRAPER_AVAILABLE = False
+PP_ANALYZER_AVAILABLE = False
+H2H_AVAILABLE = False
+_upcoming_tournament = None
+
 try:
     from config.settings import DATAGOLF_ENABLED
     from config.courses import COURSE_PROFILES
@@ -525,6 +530,277 @@ except Exception as e:
         "St Andrews Old Course", "Royal Troon",
     ]
     DATAGOLF_ENABLED = False
+
+try:
+    from data.scrapers.prizepicks import PrizePicksScraper
+    PP_SCRAPER_AVAILABLE = True
+except Exception:
+    pass
+
+try:
+    from betting.prizepicks import PrizePicksAnalyzer
+    PP_ANALYZER_AVAILABLE = True
+except Exception:
+    pass
+
+try:
+    from betting.h2h import sg_to_h2h_prob, generate_synthetic_matchups
+    H2H_AVAILABLE = True
+except Exception:
+    try:
+        from betting.h2h import H2HAnalyzer
+        H2H_AVAILABLE = True
+    except Exception:
+        pass
+
+
+# ── Auto-detect upcoming tournament ──────────────────────────────────────
+@st.cache_data(ttl=3600, show_spinner=False)
+def _detect_upcoming_tournament():
+    """Query PGA Tour API for the next upcoming tournament."""
+    try:
+        from data.scrapers.pga_tour import PGATourScraper
+        scraper = PGATourScraper()
+        upcoming = scraper.fetch_upcoming_tournaments(weeks_ahead=2)
+        if upcoming:
+            t = upcoming[0]
+            return {
+                "name": t["name"],
+                "course": t.get("course_name", ""),
+                "event_id": t["pga_event_id"],
+                "start_date": t.get("start_date"),
+            }
+    except Exception:
+        pass
+    return None
+
+_upcoming_tournament = _detect_upcoming_tournament()
+
+
+# ── Real projection engine ───────────────────────────────────────────────
+@st.cache_data(ttl=600, show_spinner="Running projection pipeline...")
+def get_real_projections(course_name: str):
+    """Fetch real PGA Tour data and run SG projection model."""
+    try:
+        from data.pipeline import DataPipeline
+        from models.projection import ProjectionEngine
+
+        pipeline = DataPipeline()
+        event_id = _upcoming_tournament.get("event_id") if _upcoming_tournament else None
+        data = pipeline.full_refresh(event_id=event_id)
+
+        engine = ProjectionEngine()
+        tournament_name = _upcoming_tournament.get("name", "Tournament") if _upcoming_tournament else "Tournament"
+        proj_df = engine.run(
+            tournament_name=tournament_name,
+            course_name=course_name,
+            field_data=data.get("field", []),
+            sg_history=data.get("sg_history", {}),
+        )
+
+        if proj_df is not None and not proj_df.empty:
+            # Ensure all columns the dashboard expects exist
+            for col, default in [
+                ("rank", None), ("course_fit", 50), ("form_trend", "stable"),
+                ("dk_salary", 0), ("dk_value", 0), ("proj_ownership", 0.02), ("leverage", 0),
+            ]:
+                if col not in proj_df.columns:
+                    if col == "rank":
+                        proj_df["rank"] = range(1, len(proj_df) + 1)
+                    elif col == "course_fit":
+                        proj_df["course_fit"] = proj_df.get("course_fit_score", pd.Series([default]*len(proj_df)))
+                    else:
+                        proj_df[col] = default
+
+            # Rename SG columns to match dashboard expectations
+            renames = {}
+            for old, new in [("proj_sg_total", "proj_sg_total"), ("proj_sg_ott", "proj_sg_ott"),
+                             ("proj_sg_app", "proj_sg_app"), ("proj_sg_putt", "proj_sg_putt")]:
+                if old not in proj_df.columns and new not in proj_df.columns:
+                    proj_df[new] = 0.0
+
+            return proj_df
+    except Exception as e:
+        import traceback
+        st.session_state["_proj_error"] = f"{e}\n{traceback.format_exc()}"
+    return None
+
+
+# ── Real PrizePicks fetch ────────────────────────────────────────────────
+@st.cache_data(ttl=120, show_spinner="Fetching PrizePicks lines...")
+def fetch_live_pp_lines_direct():
+    """Fetch live PrizePicks golf lines directly from their API."""
+    try:
+        if not PP_SCRAPER_AVAILABLE:
+            return None
+        scraper = PrizePicksScraper()
+        pp_lines = scraper.fetch_golf_projections()
+        if not pp_lines:
+            return None
+        rows = []
+        for p in pp_lines:
+            rows.append({
+                "player": p.player_name,
+                "stat": p.stat_display,
+                "line": p.line_score,
+                "stat_type": p.stat_type,
+                "pp_id": p.pp_id,
+                "player_id": p.player_id,
+                "is_promo": p.is_promo,
+                "start_time": p.start_time,
+            })
+        return rows
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def get_pp_lines_with_edges(proj_df=None):
+    """Fetch live PP lines and compute edges using our model projections."""
+    # Step 1: Try direct live fetch from PrizePicks API
+    live_rows = fetch_live_pp_lines_direct()
+
+    # Step 2: Fall back to scraper DB
+    if not live_rows:
+        live_df, _last_pull = _load_live_pp_lines()
+        if live_df is not None and not live_df.empty:
+            return live_df
+
+    if not live_rows:
+        return None  # Will fall back to demo data
+
+    # Step 3: If we have projections + analyzer, compute real edges
+    if proj_df is not None and PP_ANALYZER_AVAILABLE and PP_SCRAPER_AVAILABLE:
+        try:
+            analyzer = PrizePicksAnalyzer()
+            edges = analyzer.analyze_slate(proj_df, min_confidence="LOW")
+            if edges:
+                rows = []
+                for e in edges:
+                    rows.append({
+                        "player": e.projection.player_name,
+                        "stat": e.projection.stat_display,
+                        "line": e.line,
+                        "model_proj": e.model_proj,
+                        "gap": round(e.model_vs_line, 2),
+                        "pick": e.recommendation,
+                        "prob": e.pick_prob,
+                        "confidence": e.confidence,
+                    })
+                if rows:
+                    return pd.DataFrame(rows)
+        except Exception:
+            pass
+
+    # Step 4: Build basic edge table from raw lines + projection data
+    if proj_df is not None and not proj_df.empty:
+        proj_map = {}
+        for _, row in proj_df.iterrows():
+            proj_map[row["name"].lower()] = row.to_dict()
+
+        rows = []
+        for lr in live_rows:
+            player_key = lr["player"].lower()
+            player_proj = proj_map.get(player_key)
+            if not player_proj:
+                for pname, pdata in proj_map.items():
+                    if lr["player"].split()[-1].lower() in pname or pname.split()[-1] in player_key:
+                        player_proj = pdata
+                        break
+
+            sg_total = player_proj.get("proj_sg_total", 0) if player_proj else 0
+            # Simple stat projection using SG sensitivity
+            SENSITIVITIES = {
+                "fantasy_score": 9.2, "birdies_or_better": 0.9, "birdies": 0.9,
+                "bogey_free_rounds": 0.12, "strokes_total": -4.0, "gir": 1.2,
+                "fairways_hit": 1.5, "eagles": 0.025, "holes_under_par": 1.8,
+            }
+            BASELINES = {
+                "fantasy_score": 37.0, "birdies_or_better": 4.2, "birdies": 4.2,
+                "bogey_free_rounds": 1.1, "strokes_total": 284.0, "gir": 11.5,
+                "fairways_hit": 9.0, "eagles": 0.12, "holes_under_par": 18.0,
+            }
+            stat_key = lr.get("stat_type", lr["stat"].lower().replace(" ", "_"))
+            baseline = BASELINES.get(stat_key, lr["line"])
+            sens = SENSITIVITIES.get(stat_key, 1.0)
+            model_proj = baseline + sg_total * sens
+            gap = round(model_proj - lr["line"], 2)
+            pick = "OVER" if gap > 0 else "UNDER"
+            prob = min(0.50 + abs(gap) * 0.03, 0.85)
+            conf = "HIGH" if prob >= 0.625 else "MEDIUM" if prob >= 0.575 else "LOW"
+
+            rows.append({
+                "player": lr["player"], "stat": lr["stat"],
+                "line": lr["line"], "model_proj": round(model_proj, 1),
+                "gap": gap, "pick": pick, "prob": prob, "confidence": conf,
+            })
+        if rows:
+            return pd.DataFrame(rows)
+
+    # Step 5: Raw lines without model (minimal info)
+    rows = []
+    for lr in live_rows:
+        model_proj = lr["line"] * 1.03
+        gap = round(model_proj - lr["line"], 2)
+        rows.append({
+            "player": lr["player"], "stat": lr["stat"],
+            "line": lr["line"], "model_proj": round(model_proj, 1),
+            "gap": gap, "pick": "OVER" if gap > 0 else "UNDER",
+            "prob": 0.55, "confidence": "LOW",
+        })
+    return pd.DataFrame(rows) if rows else None
+
+
+# ── Generate H2H from real projections ───────────────────────────────────
+def generate_h2h_from_projections(proj_df):
+    """Generate head-to-head matchups from model projections."""
+    if proj_df is None or proj_df.empty or len(proj_df) < 4:
+        return None
+    try:
+        top = proj_df.head(20).copy()
+        matchups = []
+        seen = set()
+        for i, row_a in top.iterrows():
+            for j, row_b in top.iterrows():
+                if i >= j:
+                    continue
+                key = (row_a["name"], row_b["name"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                sg_a = row_a.get("proj_sg_total", 0) or 0
+                sg_b = row_b.get("proj_sg_total", 0) or 0
+                sg_edge = round(sg_a - sg_b, 3)
+                if abs(sg_edge) < 0.05:
+                    continue
+                # Logistic conversion: 0.32 per SG stroke (from h2h.py)
+                from scipy.special import expit
+                prob_a = round(float(expit(sg_edge * 0.32)), 2)
+                fit_a = row_a.get("course_fit", row_a.get("course_fit_score", 50))
+                fit_b = row_b.get("course_fit", row_b.get("course_fit_score", 50))
+                form_a = row_a.get("form_trend", "stable")
+                form_b = row_b.get("form_trend", "stable")
+                notes_parts = [f"SG edge: {row_a['name'].split()[-1]} {sg_edge:+.3f}"]
+                if fit_a and fit_b and fit_a != fit_b:
+                    notes_parts.append(f"Course fit: {row_a['name'].split()[-1]} {'+' if fit_a > fit_b else ''}{int(fit_a - fit_b)}pts")
+                if form_a != "stable":
+                    notes_parts.append(f"Form: {row_a['name'].split()[-1]} {form_a}")
+                matchups.append({
+                    "player_a": row_a["name"], "player_b": row_b["name"],
+                    "sg_edge": sg_edge, "win_prob_a": prob_a,
+                    "win_prob_b": round(1 - prob_a, 2),
+                    "notes": " | ".join(notes_parts),
+                })
+                if len(matchups) >= 12:
+                    break
+            if len(matchups) >= 12:
+                break
+        if matchups:
+            df = pd.DataFrame(matchups)
+            return df.sort_values("sg_edge", ascending=False, key=abs).head(10)
+    except Exception:
+        pass
+    return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -546,7 +822,8 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
     st.markdown("**TOURNAMENT**")
-    tournament_name = st.text_input("Tournament Name", value="The Masters 2025", label_visibility="collapsed")
+    _default_tournament = (_upcoming_tournament.get("name", "") + " " + str(datetime.now().year)) if _upcoming_tournament else f"PGA Tour {datetime.now().year}"
+    tournament_name = st.text_input("Tournament Name", value=_default_tournament, label_visibility="collapsed")
     course = st.selectbox("Course", COURSE_NAMES, label_visibility="collapsed")
 
     st.markdown("<br>**BANKROLL**", unsafe_allow_html=True)
@@ -568,11 +845,13 @@ with st.sidebar:
 
     # Data source status
     st.markdown("**DATA SOURCES**")
+    _pp_status = "live" if PP_SCRAPER_AVAILABLE else "stub"
+    _engine_status = "live" if ENGINE_AVAILABLE else "off"
     sources = [
-        ("PGA Tour API", "live"),
-        ("ESPN Golf",    "live"),
-        ("OpenWeather",  "live"),
-        ("PrizePicks",   "live"),
+        ("PGA Tour API", _engine_status),
+        ("ESPN Golf",    _engine_status),
+        ("OpenWeather",  "live" if ENGINE_AVAILABLE else "stub"),
+        ("PrizePicks",   _pp_status),
         ("DataGolf",     "live" if DATAGOLF_ENABLED else "stub"),
     ]
     for name, status in sources:
@@ -598,10 +877,15 @@ with st.sidebar:
 # HEADER
 # ═══════════════════════════════════════════════════════════════════════════
 
+_data_badge = ('<span style="background:#052e16;color:#4ade80;padding:2px 8px;border-radius:4px;'
+               'font-size:0.6rem;font-family:IBM Plex Mono,monospace;margin-left:12px;">LIVE DATA</span>'
+               if st.session_state.get("_using_real_data") else
+               '<span style="background:#1c1002;color:#facc15;padding:2px 8px;border-radius:4px;'
+               'font-size:0.6rem;font-family:IBM Plex Mono,monospace;margin-left:12px;">DEMO DATA</span>')
 st.markdown(f"""
 <div class="dash-header">
     <div>
-        <h1>⛳ GOLF QUANT ENGINE</h1>
+        <h1>⛳ GOLF QUANT ENGINE {_data_badge}</h1>
         <div class="sub">{tournament_name.upper()} &nbsp;·&nbsp; {course.upper()} &nbsp;·&nbsp; {datetime.now().strftime("%B %d, %Y")}</div>
     </div>
 </div>
@@ -614,9 +898,36 @@ st.markdown(f"""
 
 if "projections" not in st.session_state or run_btn:
     with st.spinner("Running projection pipeline..."):
-        st.session_state.projections  = get_demo_projections()
-        st.session_state.pp_lines     = get_pp_lines()
-        st.session_state.h2h          = get_demo_h2h()
+        # ── Try real data first, fall back to demo ──
+        _real_proj = None
+        if ENGINE_AVAILABLE:
+            _real_proj = get_real_projections(course)
+            if _real_proj is not None and not _real_proj.empty:
+                st.session_state.projections = _real_proj
+                st.session_state._using_real_data = True
+            else:
+                st.session_state.projections = get_demo_projections()
+                st.session_state._using_real_data = False
+                if "_proj_error" in st.session_state:
+                    st.toast(f"Engine error, using demo data: {st.session_state['_proj_error'][:100]}", icon="⚠️")
+        else:
+            st.session_state.projections = get_demo_projections()
+            st.session_state._using_real_data = False
+
+        # ── PrizePicks: try live fetch → scraper DB → demo ──
+        _pp = get_pp_lines_with_edges(st.session_state.projections if st.session_state.get("_using_real_data") else None)
+        if _pp is not None and not _pp.empty:
+            st.session_state.pp_lines = _pp
+        else:
+            st.session_state.pp_lines = get_pp_lines()
+
+        # ── H2H: generate from real projections → demo ──
+        _h2h = generate_h2h_from_projections(st.session_state.projections if st.session_state.get("_using_real_data") else None)
+        if _h2h is not None and not _h2h.empty:
+            st.session_state.h2h = _h2h
+        else:
+            st.session_state.h2h = get_demo_h2h()
+
         st.session_state.lineups      = get_demo_lineups()
         st.session_state.audit_data   = get_demo_audit()
 
@@ -799,7 +1110,9 @@ with tab1:
 # ───────────────────────────────────────────────────────────────────────────
 with tab2:
     # Scraper status indicator
-    _pp_live, _pp_last_pull = _load_live_pp_lines()
+    _pp_live_check, _pp_last_pull = _load_live_pp_lines()
+    _pp_has_real_lines = (pp_df is not None and not pp_df.empty and
+                          not pp_df.equals(get_pp_lines()) if callable(get_pp_lines) else True)
     if _pp_last_pull:
         _pp_age = int((datetime.now() - _pp_last_pull).total_seconds() / 60)
         _pp_status_color = "#4ade80" if _pp_age < 45 else "#facc15" if _pp_age < 180 else "#f87171"
@@ -807,13 +1120,19 @@ with tab2:
             f'<div style="font-family:IBM Plex Mono,monospace;font-size:0.68rem;'
             f'color:{_pp_status_color};margin-bottom:8px;">'
             f'SCRAPER: Last pull {_pp_age} min ago &nbsp;·&nbsp; '
-            f'{len(_pp_live) if _pp_live is not None else 0} live lines</div>',
+            f'{len(_pp_live_check) if _pp_live_check is not None else 0} live lines</div>',
+            unsafe_allow_html=True
+        )
+    elif PP_SCRAPER_AVAILABLE:
+        st.markdown(
+            '<div style="font-family:IBM Plex Mono,monospace;font-size:0.68rem;'
+            'color:#4ade80;margin-bottom:8px;">PRIZEPICKS: Direct API fetch enabled — lines update on each run</div>',
             unsafe_allow_html=True
         )
     else:
         st.markdown(
             '<div style="font-family:IBM Plex Mono,monospace;font-size:0.68rem;'
-            'color:#4a6080;margin-bottom:8px;">SCRAPER: Using demo data — start service for live lines</div>',
+            'color:#4a6080;margin-bottom:8px;">SCRAPER: Using demo data — install dependencies for live lines</div>',
             unsafe_allow_html=True
         )
 
