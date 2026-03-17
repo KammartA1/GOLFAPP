@@ -232,6 +232,42 @@ class DFSLineup(Base):
         return json.loads(self.players_json) if self.players_json else []
 
 
+class PrizePicksLine(Base):
+    """Stored PrizePicks prop lines — populated by the scraper service."""
+    __tablename__ = "prizepicks_lines"
+    __table_args__ = (
+        Index("ix_pp_player_stat", "player_name", "stat_type"),
+        Index("ix_pp_fetched", "fetched_at"),
+    )
+    id              = Column(Integer, primary_key=True)
+    pp_id           = Column(String, index=True)          # PrizePicks projection ID
+    player_name     = Column(String, nullable=False)
+    player_id       = Column(String)
+    stat_type       = Column(String, nullable=False)       # normalized key
+    stat_display    = Column(String)                        # raw display name
+    line_score      = Column(Float, nullable=False)
+    is_promo        = Column(Boolean, default=False)
+    start_time      = Column(DateTime)
+    description     = Column(String)
+    league          = Column(String, default="PGA")
+    flash_sale_line  = Column(Float)
+    fetched_at      = Column(DateTime, default=datetime.utcnow, index=True)
+    is_latest       = Column(Boolean, default=True, index=True)  # only latest batch = True
+
+
+class ScraperStatus(Base):
+    """Monitoring table — one row per scraper, updated each run."""
+    __tablename__ = "scraper_status"
+    id              = Column(Integer, primary_key=True)
+    scraper_name    = Column(String, unique=True, nullable=False)
+    last_success    = Column(DateTime)
+    last_attempt    = Column(DateTime)
+    last_error      = Column(Text)
+    lines_fetched   = Column(Integer, default=0)
+    total_runs      = Column(Integer, default=0)
+    total_errors    = Column(Integer, default=0)
+
+
 class AuditLog(Base):
     """Free-form audit events — model updates, data refreshes, anomalies."""
     __tablename__ = "audit_logs"
