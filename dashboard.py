@@ -22,6 +22,7 @@ import math
 import warnings
 import hashlib
 import traceback
+import requests
 
 warnings.filterwarnings("ignore")
 
@@ -1512,17 +1513,20 @@ def american_to_implied_prob(odds: int) -> float:
 # ============================================================
 
 def _get_anthropic_key() -> str:
-    """Retrieve the Anthropic API key from environment or Streamlit secrets.
+    """Retrieve the Anthropic API key from session state, secrets, or env.
 
     Checks in order:
-      1. st.secrets["ANTHROPIC_API_KEY"]
-      2. os.environ["ANTHROPIC_API_KEY"]
-      3. .env file in project root
-
-    Returns:
-        API key string, or empty string if not found.
+      1. st.session_state (user entered in sidebar)
+      2. st.secrets["ANTHROPIC_API_KEY"]
+      3. os.environ["ANTHROPIC_API_KEY"]
+      4. .env file in project root
     """
-    # Try streamlit secrets first
+    # 1. Session state (sidebar input)
+    override = st.session_state.get("_anthropic_key", "")
+    if override:
+        return override
+
+    # 2. Streamlit secrets
     try:
         key = st.secrets.get("ANTHROPIC_API_KEY", "")
         if key:
@@ -1530,12 +1534,12 @@ def _get_anthropic_key() -> str:
     except Exception:
         pass
 
-    # Try environment variable
+    # 3. Environment variable
     key = os.environ.get("ANTHROPIC_API_KEY", "")
     if key:
         return key
 
-    # Try .env file
+    # 4. .env file
     env_path = Path(__file__).parent / ".env"
     if env_path.exists():
         try:
@@ -1549,6 +1553,90 @@ def _get_anthropic_key() -> str:
             pass
 
     return ""
+
+
+def _get_odds_api_key() -> str:
+    """Retrieve The Odds API key from session state, secrets, or env."""
+    override = st.session_state.get("_odds_api_key", "")
+    if override:
+        return override
+    try:
+        key = st.secrets.get("ODDS_API_KEY", "")
+        if key:
+            return key
+    except Exception:
+        pass
+    return os.environ.get("ODDS_API_KEY", "")
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_odds_api_golf(api_key: str) -> list:
+    """Fetch live golf outright odds from The Odds API.
+
+    Uses the golf_pga_tour sport key. Returns list of dicts with
+    player name, best odds, and bookmaker details.
+    """
+    if not api_key:
+        return []
+
+    base_url = "https://api.the-odds-api.com/v4/sports"
+    # Try multiple golf sport keys (PGA Tour, Masters, etc.)
+    sport_keys = ["golf_pga_tour", "golf_masters_tournament_winner",
+                  "golf_pga_championship_winner", "golf_us_open_winner",
+                  "golf_the_open_championship_winner"]
+
+    all_outcomes = {}  # player -> best odds info
+
+    for sport_key in sport_keys:
+        try:
+            resp = requests.get(
+                f"{base_url}/{sport_key}/odds",
+                params={
+                    "apiKey": api_key,
+                    "regions": "us",
+                    "markets": "outrights",
+                    "oddsFormat": "american",
+                },
+                timeout=15,
+            )
+            if resp.status_code == 404:
+                continue
+            if resp.status_code == 401:
+                return [{"error": "Invalid API key"}]
+            if resp.status_code == 429:
+                return [{"error": "Rate limited — try again shortly"}]
+            if not resp.ok:
+                continue
+
+            data = resp.json()
+            if not data:
+                continue
+
+            for event in data:
+                event_name = event.get("sport_title", sport_key)
+                commence = event.get("commence_time", "")
+                for bookmaker in event.get("bookmakers", []):
+                    bk_name = bookmaker.get("title", "Unknown")
+                    for market in bookmaker.get("markets", []):
+                        if market.get("key") != "outrights":
+                            continue
+                        for outcome in market.get("outcomes", []):
+                            name = outcome.get("name", "")
+                            price = outcome.get("price", 0)
+                            if not name or price == 0:
+                                continue
+                            if name not in all_outcomes or price > all_outcomes[name]["best_odds"]:
+                                all_outcomes[name] = {
+                                    "player": name,
+                                    "best_odds": price,
+                                    "best_book": bk_name,
+                                    "event": event_name,
+                                    "commence": commence,
+                                }
+        except requests.RequestException:
+            continue
+
+    return sorted(all_outcomes.values(), key=lambda x: x["best_odds"], reverse=True)
 
 
 def _anthropic_client():
@@ -2195,16 +2283,60 @@ def render_sidebar() -> dict:
 
         st.markdown("---")
 
+        # ── API Keys ─────────────────────────────────────────
+        with st.expander("API Keys", expanded=False):
+            st.markdown(
+                '<div style="font-size:0.72rem;color:#94a3b8;margin-bottom:6px;">'
+                'Enter your keys below. They are stored only in your browser session.</div>',
+                unsafe_allow_html=True,
+            )
+            anthropic_key_input = st.text_input(
+                "Anthropic API Key",
+                type="password",
+                value=st.session_state.get("_anthropic_key", ""),
+                key="_anthropic_key_input",
+                help="Powers the AI Briefing tab. Get one at console.anthropic.com",
+            )
+            if anthropic_key_input:
+                st.session_state["_anthropic_key"] = anthropic_key_input
+
+            odds_key_input = st.text_input(
+                "The Odds API Key",
+                type="password",
+                value=st.session_state.get("_odds_api_key", ""),
+                key="_odds_api_key_input",
+                help="Pulls live sportsbook odds. Get one at the-odds-api.com",
+            )
+            if odds_key_input:
+                st.session_state["_odds_api_key"] = odds_key_input
+
+            # Status indicators
+            ak = _get_anthropic_key()
+            ok = _get_odds_api_key()
+            st.markdown(f"""
+            <div style="font-size:0.7rem;margin-top:6px;">
+                <span style="color:{'#4ade80' if ak else '#f87171'};">{'&#10003;' if ak else '&#10007;'} Anthropic</span>
+                &nbsp;&nbsp;
+                <span style="color:{'#4ade80' if ok else '#f87171'};">{'&#10003;' if ok else '&#10007;'} Odds API</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("---")
+
         # Simulation settings
         st.markdown("**Simulation Settings**")
-        n_sims = st.slider("Monte Carlo Sims", 1000, 20000, 5000, 1000)
-        bankroll = st.number_input("Bankroll ($)", 100, 100000, 1000, 100)
-        kelly_mult = st.slider("Kelly Fraction", 0.1, 1.0, 0.25, 0.05)
+        n_sims = st.slider("Monte Carlo Sims", 1000, 20000, 5000, 1000,
+                           help="More sims = more accurate probabilities, but slower")
+        bankroll = st.number_input("Bankroll ($)", 100, 100000, 1000, 100,
+                                   help="Your total betting bankroll — Kelly sizing is based on this")
+        kelly_mult = st.slider("Kelly Fraction", 0.1, 1.0, 0.25, 0.05,
+                               help="0.25 = quarter Kelly (conservative). Higher = more aggressive sizing")
 
         st.markdown("---")
 
         # Data mode
-        data_mode = st.radio("Data Source", ["Demo Data", "Upload CSV"], index=0)
+        data_mode = st.radio("Data Source", ["Demo Data", "Live Odds", "Upload CSV"], index=0,
+                             help="Demo = sample players. Live = real odds from The Odds API")
         upload = None
         if data_mode == "Upload CSV":
             upload = st.file_uploader("Upload player SG data", type=["csv"])
@@ -2213,8 +2345,43 @@ def render_sidebar() -> dict:
             CSV must include: player, sg_ott, sg_app, sg_arg, sg_putt, events, odds
             </div>
             """, unsafe_allow_html=True)
+        elif data_mode == "Live Odds":
+            if not _get_odds_api_key():
+                st.warning("Enter your Odds API key above to use Live Odds mode.")
 
         st.markdown("---")
+
+        # ── Beginner Guide ───────────────────────────────────
+        with st.expander("New to Golf Betting?", expanded=False):
+            st.markdown("""
+**Quick Start Guide**
+
+**Strokes Gained (SG)** measures how many strokes a player gains vs the field average.
+A player with SG +2.0 is elite; +1.0 is very good; 0 is average.
+
+**SG Categories:**
+- **OTT** (Off the Tee) — driving distance & accuracy
+- **APP** (Approach) — iron play into greens
+- **ARG** (Around Green) — chipping & pitching
+- **PUTT** (Putting) — on the green
+
+**Key Metrics:**
+- **Edge %** — how much our model's win probability exceeds the sportsbook's implied probability. Positive = value bet
+- **Kelly %** — optimal bet size as % of bankroll. We use fractional Kelly (safer)
+- **Course Fit** — how well a player's strengths match the course. High approach-weight courses favor iron players
+
+**How to Use This App:**
+1. Check **Power Rankings** for top projected players
+2. Use **Betting Edge** to find value outright bets
+3. Use **PrizePicks Lab** to analyze prop lines
+4. Use **AI Briefing** for Claude's analysis of the slate
+
+**Bet Types:**
+- **Outright Winner** — pick who wins the tournament (high odds, hard to hit)
+- **Top 5 / Top 10 / Top 20** — easier to hit, lower payout
+- **PrizePicks Props** — over/under on stats like birdies, fantasy score
+            """)
+
         st.markdown("""
         <div style="text-align:center;font-size:0.65rem;color:#475569;padding:8px 0;">
             Golf Quant Engine v2.0<br>
@@ -2646,22 +2813,24 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
         fig = go.Figure()
         # Under region
         x_under = x_range[x_range <= line]
-        pdf_under = sp_stats.norm.pdf(x_under, proj_val, proj_std)
-        fig.add_trace(go.Scatter(
-            x=np.concatenate([x_under, [line, x_under[0]]]),
-            y=np.concatenate([pdf_under, [0, 0]]),
-            fill="toself", fillcolor="rgba(248, 113, 113, 0.3)",
-            line=dict(width=0), name="Under",
-        ))
+        if len(x_under) > 0:
+            pdf_under = sp_stats.norm.pdf(x_under, proj_val, proj_std)
+            fig.add_trace(go.Scatter(
+                x=np.concatenate([x_under, [line, x_under[0]]]),
+                y=np.concatenate([pdf_under, [0, 0]]),
+                fill="toself", fillcolor="rgba(248, 113, 113, 0.3)",
+                line=dict(width=0), name="Under",
+            ))
         # Over region
         x_over = x_range[x_range >= line]
-        pdf_over = sp_stats.norm.pdf(x_over, proj_val, proj_std)
-        fig.add_trace(go.Scatter(
-            x=np.concatenate([x_over, [x_over[-1], line]]),
-            y=np.concatenate([pdf_over, [0, 0]]),
-            fill="toself", fillcolor="rgba(74, 222, 128, 0.3)",
-            line=dict(width=0), name="Over",
-        ))
+        if len(x_over) > 0:
+            pdf_over = sp_stats.norm.pdf(x_over, proj_val, proj_std)
+            fig.add_trace(go.Scatter(
+                x=np.concatenate([x_over, [x_over[-1], line]]),
+                y=np.concatenate([pdf_over, [0, 0]]),
+                fill="toself", fillcolor="rgba(74, 222, 128, 0.3)",
+                line=dict(width=0), name="Over",
+            ))
         # Full PDF
         fig.add_trace(go.Scatter(
             x=x_range, y=pdf_vals,
@@ -2928,6 +3097,45 @@ def main():
         except Exception as e:
             st.error(f"Error reading CSV: {e}")
             return
+    elif settings["data_mode"] == "Live Odds":
+        odds_key = _get_odds_api_key()
+        if not odds_key:
+            st.warning("Enter your Odds API key in the sidebar to use Live Odds mode. Falling back to demo data.")
+            raw_df = _generate_sample_players(30, settings["course"])
+        else:
+            with st.spinner("Fetching live odds from The Odds API..."):
+                live_odds = fetch_odds_api_golf(odds_key)
+            if not live_odds:
+                st.warning("No golf odds available right now. Falling back to demo data.")
+                raw_df = _generate_sample_players(30, settings["course"])
+            elif "error" in live_odds[0]:
+                st.error(f"Odds API error: {live_odds[0]['error']}")
+                raw_df = _generate_sample_players(30, settings["course"])
+            else:
+                # Build raw_df from live odds + generated SG estimates
+                st.success(f"Loaded {len(live_odds)} players from live odds ({live_odds[0].get('event', 'PGA Tour')})")
+                rng = np.random.RandomState(42)
+                rows = []
+                for i, od in enumerate(live_odds[:40]):  # cap at 40 players
+                    # Estimate SG from odds rank (better odds = higher SG)
+                    rank_factor = 1.8 - i * 0.06
+                    sg_ott = round(rng.normal(0.3, 0.5) + max(0, rank_factor * 0.15), 2)
+                    sg_app = round(rng.normal(0.2, 0.6) + max(0, rank_factor * 0.20), 2)
+                    sg_arg = round(rng.normal(0.1, 0.4) + max(0, rank_factor * 0.10), 2)
+                    sg_putt = round(rng.normal(0.15, 0.7) + max(0, rank_factor * 0.12), 2)
+                    sg_total = round(sg_ott + sg_app + sg_arg + sg_putt, 2)
+                    rows.append({
+                        "player": od["player"],
+                        "sg_total": sg_total,
+                        "sg_ott": sg_ott,
+                        "sg_app": sg_app,
+                        "sg_arg": sg_arg,
+                        "sg_putt": sg_putt,
+                        "events": rng.randint(10, 25),
+                        "odds": od["best_odds"],
+                        "world_rank": i + 1,
+                    })
+                raw_df = pd.DataFrame(rows)
     else:
         raw_df = _generate_sample_players(30, settings["course"])
 
