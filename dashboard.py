@@ -816,6 +816,189 @@ COURSE_PROFILES = {
         "elevation": 50, "par": 70,
         "notes": "Links-influenced US Open venue, coastal wind, fescue, firm conditions",
     },
+    # ── Additional Tour venues (full season coverage) ────────
+    "Waialae CC": {
+        "sg_weights": {"sg_ott": 0.12, "sg_app": 0.28, "sg_arg": 0.22, "sg_putt": 0.38},
+        "distance_bonus": -0.02, "accuracy_penalty": -0.03,
+        "bermuda_greens": True, "wind_sensitivity": 0.55,
+        "elevation": 20, "par": 70,
+        "notes": "Short, tight layout; bermuda greens, trade winds; putting and wedge game dominate",
+    },
+    "PGA West Stadium": {
+        "sg_weights": {"sg_ott": 0.18, "sg_app": 0.30, "sg_arg": 0.18, "sg_putt": 0.34},
+        "distance_bonus": 0.03, "accuracy_penalty": -0.04,
+        "bermuda_greens": False, "wind_sensitivity": 0.35,
+        "elevation": 0, "par": 72,
+        "notes": "Desert target golf, water hazards, firm greens, elevation at sea level",
+    },
+    "Vidanta Vallarta": {
+        "sg_weights": {"sg_ott": 0.17, "sg_app": 0.28, "sg_arg": 0.20, "sg_putt": 0.35},
+        "distance_bonus": 0.02, "accuracy_penalty": -0.03,
+        "bermuda_greens": True, "wind_sensitivity": 0.40,
+        "elevation": 10, "par": 71,
+        "notes": "Resort course, paspalum greens, ocean breeze, relatively scorable",
+    },
+    "PGA National": {
+        "sg_weights": {"sg_ott": 0.15, "sg_app": 0.28, "sg_arg": 0.20, "sg_putt": 0.37},
+        "distance_bonus": 0.00, "accuracy_penalty": -0.05,
+        "bermuda_greens": True, "wind_sensitivity": 0.60,
+        "elevation": 15, "par": 70,
+        "notes": "Bear Trap (15-17), heavy wind, water everywhere, bermuda greens, accuracy premium",
+    },
+    "Innisbrook Copperhead": {
+        "sg_weights": {"sg_ott": 0.16, "sg_app": 0.30, "sg_arg": 0.19, "sg_putt": 0.35},
+        "distance_bonus": 0.01, "accuracy_penalty": -0.05,
+        "bermuda_greens": True, "wind_sensitivity": 0.40,
+        "elevation": 50, "par": 71,
+        "notes": "Tight tree-lined fairways, bermuda rough, snake pit finish, accuracy critical",
+    },
+    "Austin CC": {
+        "sg_weights": {"sg_ott": 0.18, "sg_app": 0.30, "sg_arg": 0.20, "sg_putt": 0.32},
+        "distance_bonus": 0.04, "accuracy_penalty": -0.03,
+        "bermuda_greens": True, "wind_sensitivity": 0.35,
+        "elevation": 700, "par": 71,
+        "notes": "Match play venue, elevation, undulating greens, all-around game rewarded",
+    },
+    "TPC San Antonio": {
+        "sg_weights": {"sg_ott": 0.20, "sg_app": 0.28, "sg_arg": 0.17, "sg_putt": 0.35},
+        "distance_bonus": 0.05, "accuracy_penalty": -0.03,
+        "bermuda_greens": True, "wind_sensitivity": 0.50,
+        "elevation": 1000, "par": 72,
+        "notes": "Long layout, Texas wind, elevation advantage, Masters warmup for many",
+    },
+    "TPC Louisiana": {
+        "sg_weights": {"sg_ott": 0.20, "sg_app": 0.28, "sg_arg": 0.17, "sg_putt": 0.35},
+        "distance_bonus": 0.05, "accuracy_penalty": -0.02,
+        "bermuda_greens": True, "wind_sensitivity": 0.45,
+        "elevation": 5, "par": 72,
+        "notes": "Zurich Classic team event, long and open, bermuda, sea-level wind",
+    },
+    "TPC Craig Ranch": {
+        "sg_weights": {"sg_ott": 0.18, "sg_app": 0.28, "sg_arg": 0.18, "sg_putt": 0.36},
+        "distance_bonus": 0.04, "accuracy_penalty": -0.02,
+        "bermuda_greens": True, "wind_sensitivity": 0.40,
+        "elevation": 600, "par": 72,
+        "notes": "Scorable Texas layout, wide fairways, birdie-fest, putting premium",
+    },
+    "Oakmont CC": {
+        "sg_weights": {"sg_ott": 0.20, "sg_app": 0.32, "sg_arg": 0.18, "sg_putt": 0.30},
+        "distance_bonus": 0.06, "accuracy_penalty": -0.06,
+        "bermuda_greens": False, "wind_sensitivity": 0.30,
+        "elevation": 1200, "par": 70,
+        "notes": "Hardest US Open venue, church pew bunkers, ultra-fast greens, extreme precision required",
+    },
+    "Detroit GC": {
+        "sg_weights": {"sg_ott": 0.18, "sg_app": 0.28, "sg_arg": 0.18, "sg_putt": 0.36},
+        "distance_bonus": 0.04, "accuracy_penalty": -0.02,
+        "bermuda_greens": False, "wind_sensitivity": 0.25,
+        "elevation": 600, "par": 72,
+        "notes": "Scorable Midwest layout, wide fairways, birdie-or-bust, putting wins",
+    },
+    "TPC Deere Run": {
+        "sg_weights": {"sg_ott": 0.15, "sg_app": 0.28, "sg_arg": 0.20, "sg_putt": 0.37},
+        "distance_bonus": 0.01, "accuracy_penalty": -0.02,
+        "bermuda_greens": False, "wind_sensitivity": 0.25,
+        "elevation": 590, "par": 71,
+        "notes": "Softest course on Tour, birdie-fest, putter-dominant, shorter hitters do well",
+    },
+    "Renaissance Club": {
+        "sg_weights": {"sg_ott": 0.18, "sg_app": 0.30, "sg_arg": 0.22, "sg_putt": 0.30},
+        "distance_bonus": 0.04, "accuracy_penalty": -0.04,
+        "bermuda_greens": False, "wind_sensitivity": 0.70,
+        "elevation": 30, "par": 70,
+        "notes": "Scottish links, wind dominant, firm-and-fast, Open Championship prep",
+    },
+    "St Andrews": {
+        "sg_weights": {"sg_ott": 0.18, "sg_app": 0.28, "sg_arg": 0.24, "sg_putt": 0.30},
+        "distance_bonus": 0.05, "accuracy_penalty": -0.03,
+        "bermuda_greens": False, "wind_sensitivity": 0.80,
+        "elevation": 20, "par": 72,
+        "notes": "Home of Golf, Old Course, wind is #1 factor, local knowledge, huge double greens",
+    },
+    "TPC Twin Cities": {
+        "sg_weights": {"sg_ott": 0.19, "sg_app": 0.28, "sg_arg": 0.18, "sg_putt": 0.35},
+        "distance_bonus": 0.04, "accuracy_penalty": -0.03,
+        "bermuda_greens": False, "wind_sensitivity": 0.30,
+        "elevation": 900, "par": 71,
+        "notes": "Midwest layout, reasonable length, approach accuracy rewarded, low wind",
+    },
+    "Sedgefield CC": {
+        "sg_weights": {"sg_ott": 0.13, "sg_app": 0.28, "sg_arg": 0.22, "sg_putt": 0.37},
+        "distance_bonus": -0.02, "accuracy_penalty": -0.04,
+        "bermuda_greens": True, "wind_sensitivity": 0.30,
+        "elevation": 840, "par": 70,
+        "notes": "Short classic Donald Ross, bermuda greens, wedge game + putting = king",
+    },
+    "TPC Southwind": {
+        "sg_weights": {"sg_ott": 0.17, "sg_app": 0.30, "sg_arg": 0.18, "sg_putt": 0.35},
+        "distance_bonus": 0.02, "accuracy_penalty": -0.05,
+        "bermuda_greens": True, "wind_sensitivity": 0.40,
+        "elevation": 300, "par": 70,
+        "notes": "FedEx playoff, tight tree-lined, bermuda, water on several holes, accuracy premium",
+    },
+    "Castle Pines": {
+        "sg_weights": {"sg_ott": 0.22, "sg_app": 0.30, "sg_arg": 0.16, "sg_putt": 0.32},
+        "distance_bonus": 0.07, "accuracy_penalty": -0.03,
+        "bermuda_greens": False, "wind_sensitivity": 0.30,
+        "elevation": 6200, "par": 72,
+        "notes": "Mile-high altitude (ball flies 10%+), long hitters dominate, thin air putting",
+    },
+    "Royal Montreal": {
+        "sg_weights": {"sg_ott": 0.18, "sg_app": 0.30, "sg_arg": 0.20, "sg_putt": 0.32},
+        "distance_bonus": 0.03, "accuracy_penalty": -0.04,
+        "bermuda_greens": False, "wind_sensitivity": 0.40,
+        "elevation": 100, "par": 70,
+        "notes": "Presidents Cup venue, classic design, well-bunkered, Canadian weather factor",
+    },
+    "CC of Jackson": {
+        "sg_weights": {"sg_ott": 0.16, "sg_app": 0.28, "sg_arg": 0.20, "sg_putt": 0.36},
+        "distance_bonus": 0.02, "accuracy_penalty": -0.03,
+        "bermuda_greens": True, "wind_sensitivity": 0.25,
+        "elevation": 300, "par": 72,
+        "notes": "Scorable fall event, bermuda, straightforward layout, putting heavy",
+    },
+    "TPC Summerlin": {
+        "sg_weights": {"sg_ott": 0.17, "sg_app": 0.28, "sg_arg": 0.18, "sg_putt": 0.37},
+        "distance_bonus": 0.03, "accuracy_penalty": -0.02,
+        "bermuda_greens": False, "wind_sensitivity": 0.35,
+        "elevation": 2800, "par": 72,
+        "notes": "Desert layout, elevation helps distance, scorable, birdie-fest, putting wins",
+    },
+    "Accordia Golf": {
+        "sg_weights": {"sg_ott": 0.16, "sg_app": 0.30, "sg_arg": 0.20, "sg_putt": 0.34},
+        "distance_bonus": 0.02, "accuracy_penalty": -0.04,
+        "bermuda_greens": False, "wind_sensitivity": 0.30,
+        "elevation": 200, "par": 70,
+        "notes": "ZOZO Championship, Japan, tight fairways, precision game, firm bent greens",
+    },
+    "El Cardonal": {
+        "sg_weights": {"sg_ott": 0.18, "sg_app": 0.28, "sg_arg": 0.18, "sg_putt": 0.36},
+        "distance_bonus": 0.03, "accuracy_penalty": -0.02,
+        "bermuda_greens": True, "wind_sensitivity": 0.40,
+        "elevation": 50, "par": 72,
+        "notes": "Diamante, Cabo, desert-ocean layout, paspalum, wind off Pacific, scorable",
+    },
+    "Port Royal": {
+        "sg_weights": {"sg_ott": 0.14, "sg_app": 0.28, "sg_arg": 0.22, "sg_putt": 0.36},
+        "distance_bonus": -0.02, "accuracy_penalty": -0.03,
+        "bermuda_greens": True, "wind_sensitivity": 0.65,
+        "elevation": 50, "par": 71,
+        "notes": "Bermuda oceanside, heavy wind, short but tricky, bermuda greens, scrambling key",
+    },
+    "Sea Island": {
+        "sg_weights": {"sg_ott": 0.15, "sg_app": 0.28, "sg_arg": 0.20, "sg_putt": 0.37},
+        "distance_bonus": 0.01, "accuracy_penalty": -0.03,
+        "bermuda_greens": True, "wind_sensitivity": 0.45,
+        "elevation": 10, "par": 70,
+        "notes": "RSM Classic, Seaside/Plantation combo, bermuda, coastal wind, birdie-fest",
+    },
+    "Albany GC": {
+        "sg_weights": {"sg_ott": 0.18, "sg_app": 0.28, "sg_arg": 0.18, "sg_putt": 0.36},
+        "distance_bonus": 0.04, "accuracy_penalty": -0.02,
+        "bermuda_greens": True, "wind_sensitivity": 0.50,
+        "elevation": 10, "par": 72,
+        "notes": "Hero World Challenge, Bahamas, small invitational field, ocean wind, scorable",
+    },
 }
 
 
@@ -1764,8 +1947,8 @@ def _enrich_player_row(row: dict, course: str) -> dict:
 
     # Apply course fit
     fitted = apply_course_fit(sg_dict, course)
-    row["sg_fitted"] = round(fitted["sg_fitted_total"], 3)
-    row["course_delta"] = round(fitted["sg_fitted_total"] - row["sg_total"], 3)
+    row["sg_fitted"] = round(fitted["course_adj_total"], 3)
+    row["course_delta"] = round(fitted["course_adj_total"] - row["sg_total"], 3)
 
     # Bayesian shrinkage
     row["sg_shrunk"] = round(bayesian_shrink(row["sg_fitted"], row["events"]), 3)
@@ -1808,14 +1991,114 @@ def _build_projection_table(df: pd.DataFrame, course: str) -> pd.DataFrame:
     )
 
     # Confidence interval
+    ci_lows, ci_highs = [], []
     for _, r in proj_df.iterrows():
-        ci = compute_projection_ci(r["sg_regressed"], 0.8, n_events=r["events"])
-        proj_df.loc[proj_df["player"] == r["player"], "ci_low"] = ci["ci_lower"]
-        proj_df.loc[proj_df["player"] == r["player"], "ci_high"] = ci["ci_upper"]
+        sigma = 0.8 / max(1.0, math.sqrt(r["events"]))
+        ci = compute_projection_ci(r["sg_regressed"], sigma)
+        ci_lows.append(ci[0])
+        ci_highs.append(ci[1])
+    proj_df["ci_low"] = ci_lows
+    proj_df["ci_high"] = ci_highs
 
     proj_df = proj_df.sort_values("sg_regressed", ascending=False).reset_index(drop=True)
     proj_df.index = proj_df.index + 1  # 1-based rank
     return proj_df
+
+
+# ============================================================
+# CURRENT WEEK TOURNAMENT SCHEDULE
+# ============================================================
+# Maps week ranges (month, day_start, day_end) to tournaments.
+# Each entry: (tournament_name, course_key, tour)
+# Updated for the 2025-2026 PGA Tour season.
+
+def _get_current_week_tournaments() -> list:
+    """Return list of tournaments happening this week based on current date.
+
+    Each entry is a dict with 'tournament', 'course', 'tour'.
+    Falls back to a sensible default if no match.
+    """
+    today = datetime.now()
+    month, day = today.month, today.day
+
+    # 2025-2026 PGA Tour schedule (approximate week windows)
+    schedule = [
+        # January
+        ((1, 2, 8), [("The Sentry", "Kapalua Plantation", "PGA")]),
+        ((1, 9, 15), [("Sony Open", "Waialae CC", "PGA")]),
+        ((1, 16, 22), [("The American Express", "PGA West Stadium", "PGA")]),
+        ((1, 23, 29), [("Farmers Insurance Open", "Torrey Pines South", "PGA")]),
+        ((1, 30, 31), [("AT&T Pebble Beach Pro-Am", "Pebble Beach", "PGA")]),
+        # February
+        ((2, 1, 5), [("AT&T Pebble Beach Pro-Am", "Pebble Beach", "PGA")]),
+        ((2, 6, 12), [("WM Phoenix Open", "TPC Scottsdale", "PGA")]),
+        ((2, 13, 19), [("Genesis Invitational", "Riviera CC", "PGA")]),
+        ((2, 20, 26), [("Mexico Open", "Vidanta Vallarta", "PGA")]),
+        ((2, 27, 28), [("Cognizant Classic", "PGA National", "PGA")]),
+        # March
+        ((3, 1, 5), [("Cognizant Classic", "PGA National", "PGA")]),
+        ((3, 6, 12), [("Arnold Palmer Invitational", "Bay Hill", "PGA")]),
+        ((3, 13, 19), [("THE PLAYERS Championship", "TPC Sawgrass", "PGA"),
+                        ("Valspar Championship", "Innisbrook Copperhead", "PGA")]),
+        ((3, 20, 26), [("WGC-Dell Match Play", "Austin CC", "PGA")]),
+        ((3, 27, 31), [("Valero Texas Open", "TPC San Antonio", "PGA")]),
+        # April
+        ((4, 1, 6), [("Valero Texas Open", "TPC San Antonio", "PGA")]),
+        ((4, 7, 13), [("The Masters", "Augusta National", "Major")]),
+        ((4, 14, 20), [("RBC Heritage", "Harbour Town", "PGA")]),
+        ((4, 21, 27), [("Zurich Classic", "TPC Louisiana", "PGA")]),
+        ((4, 28, 30), [("THE CJ CUP Byron Nelson", "TPC Craig Ranch", "PGA")]),
+        # May
+        ((5, 1, 4), [("THE CJ CUP Byron Nelson", "TPC Craig Ranch", "PGA")]),
+        ((5, 5, 11), [("Wells Fargo Championship", "Quail Hollow", "PGA")]),
+        ((5, 12, 18), [("PGA Championship", "Quail Hollow", "Major")]),
+        ((5, 19, 25), [("Charles Schwab Challenge", "Colonial CC", "PGA")]),
+        ((5, 26, 31), [("the Memorial Tournament", "Muirfield Village", "PGA")]),
+        # June
+        ((6, 1, 8), [("the Memorial Tournament", "Muirfield Village", "PGA")]),
+        ((6, 9, 15), [("U.S. Open", "Oakmont CC", "Major")]),
+        ((6, 16, 22), [("Travelers Championship", "TPC River Highlands", "PGA")]),
+        ((6, 23, 29), [("Rocket Mortgage Classic", "Detroit GC", "PGA")]),
+        ((6, 30, 30), [("John Deere Classic", "TPC Deere Run", "PGA")]),
+        # July
+        ((7, 1, 6), [("John Deere Classic", "TPC Deere Run", "PGA")]),
+        ((7, 7, 13), [("Genesis Scottish Open", "Renaissance Club", "PGA")]),
+        ((7, 14, 20), [("The Open Championship", "St Andrews", "Major")]),
+        ((7, 21, 27), [("3M Open", "TPC Twin Cities", "PGA")]),
+        ((7, 28, 31), [("Wyndham Championship", "Sedgefield CC", "PGA")]),
+        # August
+        ((8, 1, 3), [("Wyndham Championship", "Sedgefield CC", "PGA")]),
+        ((8, 4, 10), [("FedEx St. Jude Championship", "TPC Southwind", "PGA")]),
+        ((8, 11, 17), [("BMW Championship", "Castle Pines", "PGA")]),
+        ((8, 18, 24), [("TOUR Championship", "East Lake", "PGA")]),
+        # September
+        ((9, 22, 28), [("Presidents Cup", "Royal Montreal", "PGA")]),
+        # October
+        ((10, 6, 12), [("Sanderson Farms Championship", "CC of Jackson", "PGA")]),
+        ((10, 13, 19), [("Shriners Children's Open", "TPC Summerlin", "PGA")]),
+        ((10, 20, 26), [("ZOZO Championship", "Accordia Golf", "PGA")]),
+        ((10, 27, 31), [("World Wide Technology Championship", "El Cardonal", "PGA")]),
+        # November
+        ((11, 3, 9), [("Bermuda Championship", "Port Royal", "PGA")]),
+        ((11, 10, 16), [("Butterfield Bermuda Championship", "Port Royal", "PGA")]),
+        ((11, 17, 23), [("RSM Classic", "Sea Island", "PGA")]),
+        # December
+        ((12, 1, 7), [("Hero World Challenge", "Albany GC", "PGA")]),
+    ]
+
+    matches = []
+    for (m, d_start, d_end), tournaments in schedule:
+        if month == m and d_start <= day <= d_end:
+            matches.extend(tournaments)
+
+    if not matches:
+        # Off-week or no match — return empty
+        return []
+
+    result = []
+    for name, course_key, tour in matches:
+        result.append({"tournament": name, "course": course_key, "tour": tour})
+    return result
 
 
 # ============================================================
@@ -1827,13 +2110,53 @@ def render_sidebar() -> dict:
         st.markdown(section_header("Golf Quant Engine", "&#9971;", "v2.0"), unsafe_allow_html=True)
         st.markdown("---")
 
-        # Course selector
-        course = st.selectbox(
-            "Tournament Course",
-            options=sorted(COURSE_PROFILES.keys()),
-            index=sorted(COURSE_PROFILES.keys()).index("Augusta National")
-            if "Augusta National" in COURSE_PROFILES else 0,
-        )
+        # ── Current Week Tournaments ─────────────────────────
+        this_week = _get_current_week_tournaments()
+        if this_week:
+            st.markdown("**This Week's Tournaments**")
+            # Build quick-select options from this week's events
+            week_options = []
+            for t in this_week:
+                label = f"{t['tournament']} — {t['course']}"
+                if t["tour"] == "Major":
+                    label += " ⭐"
+                week_options.append((label, t["course"]))
+
+            selected_label = st.radio(
+                "Quick Select",
+                options=[label for label, _ in week_options],
+                index=0,
+                label_visibility="collapsed",
+            )
+            # Determine the course from selection
+            quick_course = None
+            for label, crs in week_options:
+                if label == selected_label:
+                    quick_course = crs
+                    break
+
+            st.markdown("---")
+            # Show full course list with the quick-selected course as default
+            all_courses = sorted(COURSE_PROFILES.keys())
+            default_idx = all_courses.index(quick_course) if quick_course in all_courses else 0
+            course = st.selectbox(
+                "All Courses (override)",
+                options=all_courses,
+                index=default_idx,
+            )
+        else:
+            st.markdown(
+                '<div style="font-size:0.8rem;color:#64748b;margin-bottom:8px;">'
+                'No PGA events scheduled this week</div>',
+                unsafe_allow_html=True,
+            )
+            # Full course selector
+            course = st.selectbox(
+                "Tournament Course",
+                options=sorted(COURSE_PROFILES.keys()),
+                index=sorted(COURSE_PROFILES.keys()).index("Augusta National")
+                if "Augusta National" in COURSE_PROFILES else 0,
+            )
 
         # Course info
         cp = COURSE_PROFILES.get(course, {})
