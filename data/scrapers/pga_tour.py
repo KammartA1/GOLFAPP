@@ -38,12 +38,20 @@ def _make_session() -> requests.Session:
 
 def _request(session: requests.Session, method: str, url: str, **kwargs) -> Optional[dict]:
     """Resilient request with retry + delay."""
+    kwargs.setdefault("verify", True)
     for attempt in range(MAX_RETRIES):
         try:
             resp = session.request(method, url, timeout=REQUEST_TIMEOUT, **kwargs)
             resp.raise_for_status()
             time.sleep(REQUEST_DELAY)
             return resp.json()
+        except requests.exceptions.SSLError:
+            # Retry once without SSL verification (handles clock skew / cert issues)
+            if kwargs.get("verify", True):
+                log.warning(f"SSL error on {url}, retrying without verification")
+                kwargs["verify"] = False
+                continue
+            log.error(f"SSL error persists for {url}")
         except requests.HTTPError as e:
             log.warning(f"HTTP {e.response.status_code} on attempt {attempt+1}: {url}")
             if e.response.status_code == 429:
@@ -61,29 +69,42 @@ def _request(session: requests.Session, method: str, url: str, **kwargs) -> Opti
 
 PLAYER_LIST_QUERY = """
 query PlayerDirectory($tourCode: TourCode!, $active: Boolean) {
-  players(tourCode: $tourCode, active: $active) {
-    id
-    firstName
-    lastName
-    country
-    worldRankings { current }
-    playerBio { age birthplace }
+  playerDirectory(tourCode: $tourCode, active: $active) {
+    players {
+      id
+      firstName
+      lastName
+      country
+      shortName
+    }
   }
 }
 """
 
 TOURNAMENT_SCHEDULE_QUERY = """
-query Schedule($tourCode: TourCode!, $year: Int) {
+query Schedule($tourCode: String!, $year: String) {
   schedule(tourCode: $tourCode, year: $year) {
     completed {
-      id name purse
-      courses { name }
-      dates { start end }
+      month
+      year
+      tournaments {
+        id
+        tournamentName
+        startDate
+        courseName
+        purse
+      }
     }
     upcoming {
-      id name purse
-      courses { name }
-      dates { start end }
+      month
+      year
+      tournaments {
+        id
+        tournamentName
+        startDate
+        courseName
+        purse
+      }
     }
   }
 }
@@ -94,13 +115,18 @@ query TournamentResults($id: ID!) {
   tournamentPastResults(id: $id) {
     id
     players {
-      id
-      player { id firstName lastName country }
-      status
-      total
-      position { short }
-      rounds { score }
-      earnings
+      ... on HistoricalLeaderboardRow {
+        id
+        position
+        total
+        parRelativeScore
+        player {
+          id
+          firstName
+          lastName
+          country
+        }
+      }
     }
   }
 }
@@ -109,11 +135,19 @@ query TournamentResults($id: ID!) {
 SG_STATS_QUERY = """
 query StatDetails($tourCode: TourCode!, $statId: String!, $year: Int) {
   statDetails(tourCode: $tourCode, statId: $statId, year: $year) {
-    displayName
+    statTitle
     rows {
-      player { id firstName lastName }
-      stats { statValue }
-      rank
+      ... on StatDetailsPlayer {
+        playerId
+        playerName
+        rank
+        stats {
+          ... on CategoryPlayerStat {
+            statName
+            statValue
+          }
+        }
+      }
     }
   }
 }
@@ -160,17 +194,17 @@ class PGATourScraper:
         """Fetch all active PGA Tour players."""
         log.info("Fetching PGA Tour player list...")
         data = self._gql(PLAYER_LIST_QUERY, {"tourCode": self.tour_code, "active": active_only})
-        if not data or "data" not in data:
+        if not data or "data" not in data or data["data"] is None:
             log.error("Failed to fetch player list")
             return []
-        players = data["data"].get("players", [])
+        players = data["data"].get("playerDirectory", {}).get("players", [])
         result = []
         for p in players:
             result.append({
                 "pga_player_id": p["id"],
                 "name": f"{p['firstName']} {p['lastName']}",
                 "country": p.get("country", ""),
-                "world_rank": p.get("worldRankings", {}).get("current"),
+                "world_rank": None,  # Not available in directory query
             })
         log.info(f"Fetched {len(result)} players")
         return result
@@ -181,32 +215,36 @@ class PGATourScraper:
         """Fetch tournament schedule for a given year."""
         year = year or datetime.now().year
         log.info(f"Fetching {year} schedule...")
-        data = self._gql(TOURNAMENT_SCHEDULE_QUERY, {"tourCode": self.tour_code, "year": year})
-        if not data or "data" not in data:
+        data = self._gql(TOURNAMENT_SCHEDULE_QUERY, {"tourCode": self.tour_code, "year": str(year)})
+        if not data or "data" not in data or data["data"] is None:
             return {}
         return data["data"].get("schedule", {})
 
     def fetch_upcoming_tournaments(self, weeks_ahead: int = 4) -> list[dict]:
         """Get the next N weeks of tournaments."""
         schedule = self.fetch_schedule()
-        upcoming = schedule.get("upcoming", [])
+        upcoming_months = schedule.get("upcoming", [])
         cutoff = datetime.now() + timedelta(weeks=weeks_ahead)
         result = []
-        for t in upcoming:
-            start_str = t.get("dates", {}).get("start", "")
-            try:
-                start = datetime.fromisoformat(start_str.replace("Z", ""))
-                if start <= cutoff:
-                    result.append({
-                        "pga_event_id": t["id"],
-                        "name": t["name"],
-                        "course_name": t.get("courses", [{}])[0].get("name", ""),
-                        "start_date": start,
-                        "purse": t.get("purse", 0),
-                    })
-            except:
-                pass
-        return result
+        for month_block in upcoming_months:
+            tournaments = month_block.get("tournaments", [])
+            for t in tournaments:
+                start_ms = t.get("startDate")
+                if not start_ms:
+                    continue
+                try:
+                    start = datetime.fromtimestamp(int(start_ms) / 1000)
+                    if start <= cutoff:
+                        result.append({
+                            "pga_event_id": t["id"],
+                            "name": t.get("tournamentName", ""),
+                            "course_name": t.get("courseName", ""),
+                            "start_date": start,
+                            "purse": t.get("purse", "0"),
+                        })
+                except Exception:
+                    pass
+        return sorted(result, key=lambda x: x["start_date"])
 
     # ── TOURNAMENT RESULTS ─────────────────────────────────────────
 
@@ -214,24 +252,21 @@ class PGATourScraper:
         """Fetch full results for a completed tournament."""
         log.info(f"Fetching results for event {event_id}...")
         data = self._gql(TOURNAMENT_RESULTS_QUERY, {"id": event_id})
-        if not data or "data" not in data:
+        if not data or "data" not in data or data["data"] is None:
             return []
         raw = data["data"].get("tournamentPastResults", {})
         results = []
         for p in raw.get("players", []):
-            player_info = p.get("player", {})
-            rounds = [r.get("score") for r in p.get("rounds", [])]
+            player_info = p.get("player", {}) or {}
+            position = p.get("position", "") or ""
+            made_cut = position not in ("CUT", "MC", "WD", "DQ")
             results.append({
                 "pga_player_id": player_info.get("id"),
                 "name": f"{player_info.get('firstName','')} {player_info.get('lastName','')}".strip(),
-                "finish_str": p.get("position", {}).get("short", ""),
-                "made_cut": p.get("status") not in ["MC", "WD", "DQ"],
+                "finish_str": position,
+                "made_cut": made_cut,
                 "score_total": p.get("total"),
-                "score_r1": rounds[0] if len(rounds) > 0 else None,
-                "score_r2": rounds[1] if len(rounds) > 1 else None,
-                "score_r3": rounds[2] if len(rounds) > 2 else None,
-                "score_r4": rounds[3] if len(rounds) > 3 else None,
-                "earnings": p.get("earnings"),
+                "par_relative": p.get("parRelativeScore"),
             })
         log.info(f"Fetched {len(results)} results")
         return results
@@ -256,23 +291,27 @@ class PGATourScraper:
             "statId": stat_id,
             "year": year
         })
-        if not data or "data" not in data:
+        if not data or "data" not in data or data["data"] is None:
             return []
 
         rows = data["data"].get("statDetails", {}).get("rows", [])
         result = []
         for row in rows:
-            p = row.get("player", {})
-            stats = row.get("stats", [{}])
-            val = stats[0].get("statValue") if stats else None
-            try:
-                val = float(val) if val else None
-            except:
-                val = None
+            player_id = row.get("playerId", "")
+            player_name = row.get("playerName", "")
+            stats = row.get("stats", [])
+            # First stat value is the primary metric
+            val = None
+            if stats:
+                raw_val = stats[0].get("statValue") if isinstance(stats[0], dict) else None
+                try:
+                    val = float(raw_val) if raw_val else None
+                except (ValueError, TypeError):
+                    val = None
 
             result.append({
-                "pga_player_id": p.get("id"),
-                "name": f"{p.get('firstName','')} {p.get('lastName','')}".strip(),
+                "pga_player_id": player_id,
+                "name": player_name,
                 "rank": row.get("rank"),
                 stat_key: val,
                 "season": year,
@@ -295,29 +334,33 @@ class PGATourScraper:
     def fetch_field(self, event_id: str) -> list[dict]:
         """Fetch the field (entry list) for an upcoming tournament."""
         FIELD_QUERY = """
-        query TournamentEntryList($id: ID!) {
-          tournamentEntryList(id: $id) {
+        query Field($id: ID!) {
+          field(id: $id) {
+            id
             players {
-              player { id firstName lastName country worldRankings { current } }
-              status
+              id
+              firstName
+              lastName
+              country
+              shortName
             }
           }
         }
         """
         log.info(f"Fetching field for event {event_id}...")
         data = self._gql(FIELD_QUERY, {"id": event_id})
-        if not data or "data" not in data:
+        if not data or "data" not in data or data["data"] is None:
             return []
 
-        raw = data["data"].get("tournamentEntryList", {})
+        raw = data["data"].get("field", {})
+        field_players = raw.get("players", [])
         players = []
-        for entry in raw.get("players", []):
-            p = entry.get("player", {})
+        for p in field_players:
             players.append({
                 "pga_player_id": p.get("id"),
                 "name": f"{p.get('firstName','')} {p.get('lastName','')}".strip(),
-                "world_rank": p.get("worldRankings", {}).get("current"),
-                "status": entry.get("status"),
+                "world_rank": None,
+                "country": p.get("country", ""),
             })
         log.info(f"Field has {len(players)} players")
         return players
