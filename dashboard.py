@@ -333,8 +333,58 @@ def get_demo_projections():
     return pd.DataFrame(rows)
 
 
+def _load_live_pp_lines():
+    """Load live PrizePicks lines from the scraper database."""
+    try:
+        from data.storage.database import get_session, PrizePicksLine, ScraperStatus
+        session = get_session()
+        try:
+            lines = session.query(PrizePicksLine).filter(
+                PrizePicksLine.is_latest == True
+            ).all()
+            if not lines:
+                return None, None
+
+            # Get scraper status for the header
+            status = session.query(ScraperStatus).filter_by(
+                scraper_name="golf_prizepicks"
+            ).first()
+            last_pull = status.last_success if status else None
+
+            rows = []
+            for l in lines:
+                # Simple edge model: compare line to rough model projection
+                # (placeholder — the real edge analyzer in betting/prizepicks.py
+                #  should be wired in for production use)
+                model_proj = l.line_score * 1.03  # placeholder
+                gap = round(model_proj - l.line_score, 2)
+                prob = 0.55 + abs(gap) * 0.02
+                pick = "OVER" if gap > 0 else "UNDER"
+                conf = "HIGH" if abs(gap) > 2.0 else "MEDIUM" if abs(gap) > 0.5 else "LOW"
+                rows.append({
+                    "player": l.player_name,
+                    "stat": l.stat_display or l.stat_type,
+                    "line": l.line_score,
+                    "model_proj": model_proj,
+                    "gap": gap,
+                    "pick": pick,
+                    "prob": min(prob, 0.85),
+                    "confidence": conf,
+                })
+            return pd.DataFrame(rows), last_pull
+        finally:
+            session.close()
+    except Exception:
+        return None, None
+
+
 @st.cache_data(ttl=60)
-def get_demo_pp_lines():
+def get_pp_lines():
+    """Load live lines from scraper DB; fall back to demo data if unavailable."""
+    live_df, _last_pull = _load_live_pp_lines()
+    if live_df is not None and not live_df.empty:
+        return live_df
+    # Fallback demo data
     lines = [
         ("Scottie Scheffler", "Fantasy Score", 52.5, 58.2, "OVER", "HIGH",  0.68),
         ("Scottie Scheffler", "Birdies or Better", 4.5, 5.1, "OVER", "HIGH", 0.64),
@@ -355,14 +405,9 @@ def get_demo_pp_lines():
     rows = []
     for player, stat, line, model, rec, conf, prob in lines:
         rows.append({
-            "player": player,
-            "stat": stat,
-            "line": line,
-            "model_proj": model,
-            "gap": round(model - line, 2),
-            "pick": rec,
-            "prob": prob,
-            "confidence": conf,
+            "player": player, "stat": stat, "line": line,
+            "model_proj": model, "gap": round(model - line, 2),
+            "pick": rec, "prob": prob, "confidence": conf,
         })
     return pd.DataFrame(rows)
 
@@ -570,7 +615,7 @@ st.markdown(f"""
 if "projections" not in st.session_state or run_btn:
     with st.spinner("Running projection pipeline..."):
         st.session_state.projections  = get_demo_projections()
-        st.session_state.pp_lines     = get_demo_pp_lines()
+        st.session_state.pp_lines     = get_pp_lines()
         st.session_state.h2h          = get_demo_h2h()
         st.session_state.lineups      = get_demo_lineups()
         st.session_state.audit_data   = get_demo_audit()
@@ -753,6 +798,25 @@ with tab1:
 # TAB 2 — PRIZEPICKS
 # ───────────────────────────────────────────────────────────────────────────
 with tab2:
+    # Scraper status indicator
+    _pp_live, _pp_last_pull = _load_live_pp_lines()
+    if _pp_last_pull:
+        _pp_age = int((datetime.now() - _pp_last_pull).total_seconds() / 60)
+        _pp_status_color = "#4ade80" if _pp_age < 45 else "#facc15" if _pp_age < 180 else "#f87171"
+        st.markdown(
+            f'<div style="font-family:IBM Plex Mono,monospace;font-size:0.68rem;'
+            f'color:{_pp_status_color};margin-bottom:8px;">'
+            f'SCRAPER: Last pull {_pp_age} min ago &nbsp;·&nbsp; '
+            f'{len(_pp_live) if _pp_live is not None else 0} live lines</div>',
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            '<div style="font-family:IBM Plex Mono,monospace;font-size:0.68rem;'
+            'color:#4a6080;margin-bottom:8px;">SCRAPER: Using demo data — start service for live lines</div>',
+            unsafe_allow_html=True
+        )
+
     pp_col1, pp_col2 = st.columns([3, 2])
 
     with pp_col1:
