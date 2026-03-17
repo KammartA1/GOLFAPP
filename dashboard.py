@@ -2255,7 +2255,7 @@ def tab_power_rankings(proj_df: pd.DataFrame, settings: dict):
             st.markdown(metric_card("Best Edge", f"{best_edge*100:.1f}%", best_edge_player, "positive", "amber"), unsafe_allow_html=True)
         with cols[3]:
             fs_adj = field_strength_adjustment(proj_df["sg_regressed"].tolist())
-            st.markdown(metric_card("Field Strength", fs_adj["label"], f"Factor: {fs_adj['adjustment']:.3f}", "neutral", "purple"), unsafe_allow_html=True)
+            st.markdown(metric_card("Field Strength", fs_adj["strength_label"], f"Factor: {fs_adj['adjustment_factor']:.3f}", "neutral", "purple"), unsafe_allow_html=True)
 
     st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
@@ -2473,7 +2473,7 @@ def tab_course_fit(proj_df: pd.DataFrame, settings: dict):
         sg_dict = {k: p_row[k] for k in ["sg_ott", "sg_app", "sg_arg", "sg_putt"]}
         for c in courses_to_compare:
             fit = apply_course_fit(sg_dict, c)
-            row_data[c] = round(fit["sg_fitted_total"], 2)
+            row_data[c] = round(fit["course_adj_total"], 2)
         heat_data.append(row_data)
 
     heat_df = pd.DataFrame(heat_data).set_index("Player")
@@ -2763,7 +2763,7 @@ def tab_monte_carlo(proj_df: pd.DataFrame, settings: dict):
         with st.spinner(f"Running {settings['n_sims']:,} Monte Carlo simulations..."):
             mc = monte_carlo_win_prob(
                 p["sg_regressed"], field_sg,
-                n_sims=settings["n_sims"], volatility=0.8,
+                n_sims=settings["n_sims"], player_sigma=0.8,
             )
 
         # Results
@@ -2775,16 +2775,23 @@ def tab_monte_carlo(proj_df: pd.DataFrame, settings: dict):
         with cols[2]:
             st.markdown(metric_card("Median Finish", f"{mc['median_finish']:.0f}", "position", "neutral", "amber"), unsafe_allow_html=True)
         with cols[3]:
-            top10_pct = mc["top_n_probs"].get(10, 0)
-            st.markdown(metric_card("Top 10", f"{top10_pct*100:.1f}%", "probability", "positive" if top10_pct > 0.3 else "neutral", "green"), unsafe_allow_html=True)
+            st.markdown(metric_card("Top 10", f"{mc['top10_prob']*100:.1f}%", "probability", "positive" if mc['top10_prob'] > 0.3 else "neutral", "green"), unsafe_allow_html=True)
 
         st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
-        # Finish distribution histogram
+        # Finish distribution — re-simulate to get raw finishes for histogram
+        rng = np.random.default_rng(seed=42)
+        n_sims = settings["n_sims"]
+        n_opp = len(field_sg)
+        player_totals = rng.normal(p["sg_regressed"] * 4, 0.8 * 2, size=n_sims)
+        opp_means = np.array(field_sg) * 4
+        opp_totals = rng.normal(opp_means[np.newaxis, :], 1.15 * 2, size=(n_sims, n_opp))
+        beaten_by = np.sum(opp_totals > player_totals[:, np.newaxis], axis=1)
+        finishes = beaten_by + 1
+
         col1, col2 = st.columns([2, 1])
         with col1:
             st.markdown("**Finish Position Distribution**")
-            finishes = mc["finish_distribution"]
             fig = go.Figure()
             fig.add_trace(go.Histogram(
                 x=finishes,
@@ -2806,7 +2813,11 @@ def tab_monte_carlo(proj_df: pd.DataFrame, settings: dict):
 
         with col2:
             st.markdown("**Top-N Probabilities**")
-            for n_val, prob in sorted(mc["top_n_probs"].items()):
+            top_n_probs = {
+                1: mc["win_prob"], 5: mc["top5_prob"],
+                10: mc["top10_prob"], 20: mc["top20_prob"],
+            }
+            for n_val, prob in sorted(top_n_probs.items()):
                 color = "green" if prob > 0.25 else "blue" if prob > 0.1 else "amber"
                 st.markdown(prob_bar_html(prob, color, f"Top {n_val}"), unsafe_allow_html=True)
 
