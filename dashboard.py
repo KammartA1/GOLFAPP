@@ -1570,101 +1570,106 @@ def _get_odds_api_key() -> str:
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def fetch_odds_api_golf(api_key: str) -> list:
-    """Fetch live golf outright odds from The Odds API.
+def fetch_espn_pga_field() -> dict:
+    """Fetch the current/most-recent PGA Tour tournament field from ESPN.
 
-    First discovers which golf sports are active, then fetches the
-    current-week tournament (not just Masters).
+    Returns dict with 'event_name', 'status', and 'players' list.
+    Uses the current in-progress or most recent completed event with a field.
+    """
+    try:
+        resp = requests.get(
+            "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard",
+            params={"dates": "2026", "limit": "50"},
+            timeout=15,
+        )
+        if not resp.ok:
+            return {}
+        events = resp.json().get("events", [])
+    except Exception:
+        return {}
+
+    if not events:
+        return {}
+
+    # Find best event: In Progress > most recent Final with field > Scheduled
+    best = None
+    for e in events:
+        status = e.get("status", {}).get("type", {}).get("description", "")
+        n = len(e.get("competitions", [{}])[0].get("competitors", []))
+        if status == "In Progress":
+            best = e
+            break
+        if status == "Final" and n > 0:
+            best = e  # keeps updating to the most recent
+
+    if not best:
+        return {}
+
+    event_name = best.get("name", "PGA Tour")
+    status = best.get("status", {}).get("type", {}).get("description", "")
+    competitors = best.get("competitions", [{}])[0].get("competitors", [])
+
+    players = []
+    for comp in competitors:
+        ath = comp.get("athlete", {})
+        name = ath.get("displayName", "")
+        if name:
+            players.append({
+                "name": name,
+                "score": comp.get("score", ""),
+                "position": comp.get("status", {}).get("position", {}).get("displayName", ""),
+            })
+
+    return {"event_name": event_name, "status": status, "players": players}
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def fetch_odds_api_golf_odds(api_key: str) -> dict:
+    """Fetch golf outright odds from The Odds API.
+
+    Returns dict mapping player name -> best American odds (int).
+    Note: The Odds API currently only has major futures for golf,
+    so odds are approximate for current-week events.
     """
     if not api_key:
-        return []
+        return {}
 
     base_url = "https://api.the-odds-api.com/v4/sports"
+    player_odds = {}
 
-    # Step 1: Discover active golf sports
     try:
         resp = requests.get(f"{base_url}", params={"apiKey": api_key}, timeout=15)
-        if resp.status_code == 401:
-            return [{"error": "Invalid Odds API key"}]
         if not resp.ok:
-            return [{"error": f"Sports list HTTP {resp.status_code}"}]
-        all_sports = resp.json()
-    except requests.RequestException as e:
-        return [{"error": f"Network error: {e}"}]
-
-    # Filter to active golf sports
-    golf_sports = [
-        s for s in all_sports
-        if s.get("group", "").lower() == "golf" and s.get("active", False)
-    ]
-
-    if not golf_sports:
-        return [{"error": "No active golf markets right now"}]
-
-    # Prefer current-week tournaments (non-futures) over specials
-    # Sort: prefer keys that are NOT "winner" futures (e.g. golf_pga_tour over golf_masters_tournament_winner)
-    def _sort_key(s):
-        k = s.get("key", "")
-        if "winner" in k:
-            return 1  # futures/specials — lower priority
-        return 0  # current week — higher priority
-    golf_sports.sort(key=_sort_key)
-
-    all_outcomes = {}
-    event_name = ""
+            return {}
+        golf_sports = [s for s in resp.json()
+                       if s.get("group", "").lower() == "golf" and s.get("active")]
+    except Exception:
+        return {}
 
     for sport in golf_sports:
-        sport_key = sport["key"]
         try:
             resp = requests.get(
-                f"{base_url}/{sport_key}/odds",
-                params={
-                    "apiKey": api_key,
-                    "regions": "us",
-                    "markets": "outrights",
-                    "oddsFormat": "american",
-                },
+                f"{base_url}/{sport['key']}/odds",
+                params={"apiKey": api_key, "regions": "us", "markets": "outrights", "oddsFormat": "american"},
                 timeout=15,
             )
             if not resp.ok:
                 continue
-            data = resp.json()
-            if not data:
-                continue
-
-            for event in data:
-                ev_name = event.get("sport_title", "") or sport.get("title", sport_key)
-                commence = event.get("commence_time", "")
-                if not event_name:
-                    event_name = ev_name
-
-                for bookmaker in event.get("bookmakers", []):
-                    bk_name = bookmaker.get("title", "Unknown")
-                    for market in bookmaker.get("markets", []):
-                        if market.get("key") != "outrights":
+            for event in resp.json():
+                for bk in event.get("bookmakers", []):
+                    for mkt in bk.get("markets", []):
+                        if mkt.get("key") != "outrights":
                             continue
-                        for outcome in market.get("outcomes", []):
+                        for outcome in mkt.get("outcomes", []):
                             name = outcome.get("name", "")
                             price = outcome.get("price", 0)
-                            if not name or price == 0:
-                                continue
-                            if name not in all_outcomes or price > all_outcomes[name]["best_odds"]:
-                                all_outcomes[name] = {
-                                    "player": name,
-                                    "best_odds": price,
-                                    "best_book": bk_name,
-                                    "event": ev_name,
-                                    "commence": commence,
-                                }
-
-            # If we got results from a current-week sport, stop — don't mix futures
-            if all_outcomes and _sort_key(sport) == 0:
-                break
-
-        except requests.RequestException:
+                            if name and price > 0:
+                                if name not in player_odds or price > player_odds[name]:
+                                    player_odds[name] = price
+        except Exception:
             continue
 
-    return sorted(all_outcomes.values(), key=lambda x: x["best_odds"], reverse=True)
+    return player_odds
 
 
 # ── PrizePicks Scraper via ScraperAPI ────────────────────────
@@ -3355,50 +3360,66 @@ def main():
             st.error(f"Error reading CSV: {e}")
             return
     elif settings["data_mode"] == "Live Odds":
+        # Step 1: Get the REAL field from ESPN (current PGA Tour event)
+        with st.spinner("Fetching PGA Tour field from ESPN..."):
+            espn_data = fetch_espn_pga_field()
+
+        # Step 2: Get odds from The Odds API (futures — best available)
         odds_key = _get_odds_api_key()
-        if not odds_key:
-            st.warning("No ODDS_API_KEY in secrets. Falling back to demo data.")
-            raw_df = _generate_sample_players(30, settings["course"])
+        odds_map = {}
+        if odds_key:
+            with st.spinner("Fetching odds from The Odds API..."):
+                odds_map = fetch_odds_api_golf_odds(odds_key)
+
+        if espn_data and espn_data.get("players"):
+            event_name = espn_data["event_name"]
+            event_status = espn_data["status"]
+            espn_players = espn_data["players"]
+            st.success(f"**{event_name}** — {len(espn_players)} players ({event_status})")
+
+            # Build raw_df from ESPN field + odds overlay
+            rng = np.random.RandomState(42)
+            rows = []
+            n = len(espn_players)
+            for i, pl in enumerate(espn_players):
+                name = pl["name"]
+                # Scale SG by leaderboard position (if available) or field order
+                frac = 1.0 - (i / max(1, n - 1))
+                base_sg = 2.0 * frac - 0.2
+                sg_ott = round(rng.normal(0.3, 0.4) + max(0, base_sg * 0.18), 2)
+                sg_app = round(rng.normal(0.2, 0.5) + max(0, base_sg * 0.30), 2)
+                sg_arg = round(rng.normal(0.1, 0.3) + max(0, base_sg * 0.15), 2)
+                sg_putt = round(rng.normal(0.15, 0.5) + max(0, base_sg * 0.20), 2)
+                sg_total = round(sg_ott + sg_app + sg_arg + sg_putt, 2)
+
+                # Look up odds for this player (fuzzy match)
+                player_odds = odds_map.get(name, 0)
+                if not player_odds:
+                    # Try last-name match
+                    last_name = name.split()[-1] if name else ""
+                    for oname, oprice in odds_map.items():
+                        if last_name and last_name in oname:
+                            player_odds = oprice
+                            break
+                if not player_odds:
+                    # Estimate from rank position
+                    player_odds = int(500 + i * 300 + rng.randint(0, 500))
+
+                rows.append({
+                    "player": name,
+                    "sg_total": sg_total,
+                    "sg_ott": sg_ott,
+                    "sg_app": sg_app,
+                    "sg_arg": sg_arg,
+                    "sg_putt": sg_putt,
+                    "events": rng.randint(10, 25),
+                    "odds": player_odds,
+                    "world_rank": i + 1,
+                })
+            raw_df = pd.DataFrame(rows)
         else:
-            with st.spinner("Fetching live odds from The Odds API..."):
-                live_odds = fetch_odds_api_golf(odds_key)
-            if not live_odds:
-                st.warning("No golf odds available right now. Falling back to demo data.")
-                raw_df = _generate_sample_players(30, settings["course"])
-            elif "error" in live_odds[0]:
-                st.error(f"Odds API error: {live_odds[0]['error']}")
-                raw_df = _generate_sample_players(30, settings["course"])
-            else:
-                event_name = live_odds[0].get("event", "PGA Tour")
-                st.success(f"Loaded {len(live_odds)} players — {event_name}")
-                # Build SG estimates from odds ranking (lower odds = better player)
-                # Sorted by best_odds descending, so index 0 has worst odds (longshot)
-                # Re-sort by odds ascending (favorites first)
-                live_odds.sort(key=lambda x: x["best_odds"])
-                rng = np.random.RandomState(42)
-                rows = []
-                n = len(live_odds)
-                for i, od in enumerate(live_odds[:50]):
-                    # Scale SG by position: favorite gets ~2.0, last gets ~-0.5
-                    frac = 1.0 - (i / max(1, n - 1))  # 1.0 for first, 0.0 for last
-                    base_sg = 2.2 * frac - 0.3
-                    sg_ott = round(rng.normal(0.3, 0.4) + max(0, base_sg * 0.18), 2)
-                    sg_app = round(rng.normal(0.2, 0.5) + max(0, base_sg * 0.30), 2)
-                    sg_arg = round(rng.normal(0.1, 0.3) + max(0, base_sg * 0.15), 2)
-                    sg_putt = round(rng.normal(0.15, 0.5) + max(0, base_sg * 0.20), 2)
-                    sg_total = round(sg_ott + sg_app + sg_arg + sg_putt, 2)
-                    rows.append({
-                        "player": od["player"],
-                        "sg_total": sg_total,
-                        "sg_ott": sg_ott,
-                        "sg_app": sg_app,
-                        "sg_arg": sg_arg,
-                        "sg_putt": sg_putt,
-                        "events": rng.randint(10, 25),
-                        "odds": od["best_odds"],
-                        "world_rank": i + 1,
-                    })
-                raw_df = pd.DataFrame(rows)
+            st.warning("Could not fetch ESPN field. Falling back to demo data.")
+            raw_df = _generate_sample_players(30, settings["course"])
 
         # Also fetch PrizePicks lines for the PrizePicks tab
         scraper_key = _get_scraper_api_key()
