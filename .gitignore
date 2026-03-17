@@ -8,3 +8,4 @@ logs/
 outputs/
 venv/
 .DS_Store
+.streamlit/secrets.toml
