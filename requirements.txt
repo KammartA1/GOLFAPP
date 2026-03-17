@@ -40,6 +40,9 @@ plotly>=5.18.0
 # DataGolf (future — API wrapper placeholder)
 # datagolf-python  # uncomment when subscribed
 
+# AI / Claude
+anthropic>=0.39.0
+
 # Utilities
 pytz>=2023.3
 python-dateutil>=2.8.0
