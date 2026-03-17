@@ -1573,21 +1573,48 @@ def _get_odds_api_key() -> str:
 def fetch_odds_api_golf(api_key: str) -> list:
     """Fetch live golf outright odds from The Odds API.
 
-    Uses the golf_pga_tour sport key. Returns list of dicts with
-    player name, best odds, and bookmaker details.
+    First discovers which golf sports are active, then fetches the
+    current-week tournament (not just Masters).
     """
     if not api_key:
         return []
 
     base_url = "https://api.the-odds-api.com/v4/sports"
-    # Try multiple golf sport keys (PGA Tour, Masters, etc.)
-    sport_keys = ["golf_pga_tour", "golf_masters_tournament_winner",
-                  "golf_pga_championship_winner", "golf_us_open_winner",
-                  "golf_the_open_championship_winner"]
 
-    all_outcomes = {}  # player -> best odds info
+    # Step 1: Discover active golf sports
+    try:
+        resp = requests.get(f"{base_url}", params={"apiKey": api_key}, timeout=15)
+        if resp.status_code == 401:
+            return [{"error": "Invalid Odds API key"}]
+        if not resp.ok:
+            return [{"error": f"Sports list HTTP {resp.status_code}"}]
+        all_sports = resp.json()
+    except requests.RequestException as e:
+        return [{"error": f"Network error: {e}"}]
 
-    for sport_key in sport_keys:
+    # Filter to active golf sports
+    golf_sports = [
+        s for s in all_sports
+        if s.get("group", "").lower() == "golf" and s.get("active", False)
+    ]
+
+    if not golf_sports:
+        return [{"error": "No active golf markets right now"}]
+
+    # Prefer current-week tournaments (non-futures) over specials
+    # Sort: prefer keys that are NOT "winner" futures (e.g. golf_pga_tour over golf_masters_tournament_winner)
+    def _sort_key(s):
+        k = s.get("key", "")
+        if "winner" in k:
+            return 1  # futures/specials — lower priority
+        return 0  # current week — higher priority
+    golf_sports.sort(key=_sort_key)
+
+    all_outcomes = {}
+    event_name = ""
+
+    for sport in golf_sports:
+        sport_key = sport["key"]
         try:
             resp = requests.get(
                 f"{base_url}/{sport_key}/odds",
@@ -1599,22 +1626,18 @@ def fetch_odds_api_golf(api_key: str) -> list:
                 },
                 timeout=15,
             )
-            if resp.status_code == 404:
-                continue
-            if resp.status_code == 401:
-                return [{"error": "Invalid API key"}]
-            if resp.status_code == 429:
-                return [{"error": "Rate limited — try again shortly"}]
             if not resp.ok:
                 continue
-
             data = resp.json()
             if not data:
                 continue
 
             for event in data:
-                event_name = event.get("sport_title", sport_key)
+                ev_name = event.get("sport_title", "") or sport.get("title", sport_key)
                 commence = event.get("commence_time", "")
+                if not event_name:
+                    event_name = ev_name
+
                 for bookmaker in event.get("bookmakers", []):
                     bk_name = bookmaker.get("title", "Unknown")
                     for market in bookmaker.get("markets", []):
@@ -1630,13 +1653,205 @@ def fetch_odds_api_golf(api_key: str) -> list:
                                     "player": name,
                                     "best_odds": price,
                                     "best_book": bk_name,
-                                    "event": event_name,
+                                    "event": ev_name,
                                     "commence": commence,
                                 }
+
+            # If we got results from a current-week sport, stop — don't mix futures
+            if all_outcomes and _sort_key(sport) == 0:
+                break
+
         except requests.RequestException:
             continue
 
     return sorted(all_outcomes.values(), key=lambda x: x["best_odds"], reverse=True)
+
+
+# ── PrizePicks Scraper via ScraperAPI ────────────────────────
+def _get_scraper_api_key() -> str:
+    """Get ScraperAPI key from secrets or env."""
+    try:
+        key = st.secrets.get("SCRAPER_API_KEY", "")
+        if key:
+            return key
+    except Exception:
+        pass
+    return os.environ.get("SCRAPER_API_KEY", "")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_prizepicks_golf_lines(scraper_key: str = "") -> list:
+    """Fetch PrizePicks golf prop lines.
+
+    Uses ScraperAPI to bypass PerimeterX protection on the PP API.
+    Falls back to direct request if ScraperAPI unavailable.
+
+    Returns list of dicts: player, stat_type, line, odds_type.
+    """
+    PP_API = "https://api.prizepicks.com/projections"
+    PP_HEADERS = {
+        "Accept": "application/vnd.api+json",
+        "Referer": "https://app.prizepicks.com/",
+        "Origin": "https://app.prizepicks.com",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    }
+    params = {"per_page": "500", "single_stat": "true", "in_play": "false"}
+
+    data = None
+
+    # Method 1: ScraperAPI proxy
+    if scraper_key:
+        try:
+            full_url = f"{PP_API}?per_page=500&single_stat=true&in_play=false"
+            resp = requests.get(
+                "https://api.scraperapi.com",
+                params={
+                    "api_key": scraper_key,
+                    "url": full_url,
+                    "render": "false",
+                },
+                timeout=30,
+            )
+            if resp.ok:
+                data = resp.json()
+        except Exception:
+            pass
+
+    # Method 2: Direct request (works from residential IPs)
+    if data is None:
+        try:
+            resp = requests.get(PP_API, params=params, headers=PP_HEADERS, timeout=20)
+            if resp.ok:
+                data = resp.json()
+        except Exception:
+            pass
+
+    if not data:
+        return []
+
+    # Parse the JSONAPI response
+    GOLF_LEAGUES = {"PGA", "PGA TOUR", "GOLF", "PGA 1R", "PGA ROUND 1",
+                    "PGA ROUND 2", "PGA ROUND 3", "PGA ROUND 4", "LPGA",
+                    "PGA TOURNAMENT", "LIV GOLF"}
+
+    included = {}
+    for item in data.get("included", []):
+        if isinstance(item, dict) and "id" in item:
+            included[item["id"]] = item
+
+    rows = []
+    for proj in data.get("data", []):
+        if not isinstance(proj, dict):
+            continue
+        attrs = proj.get("attributes", {}) or {}
+        league = str(attrs.get("league", "") or "").upper()
+        if league and league not in GOLF_LEAGUES:
+            continue
+
+        rels = proj.get("relationships", {}) or {}
+        player_id = (rels.get("new_player", {}).get("data", {}) or {}).get("id")
+        if not player_id:
+            player_id = (rels.get("player", {}).get("data", {}) or {}).get("id")
+        player_attrs = included.get(player_id, {}).get("attributes", {}) if player_id else {}
+        player_name = (
+            player_attrs.get("name", "") or attrs.get("name", "") or attrs.get("display_name", "")
+        )
+
+        stat_type = attrs.get("stat_type", "")
+        line_score = attrs.get("line_score")
+        odds_type = str(attrs.get("odds_type", "") or "").lower().strip() or "standard"
+
+        if player_name and stat_type and line_score is not None:
+            try:
+                rows.append({
+                    "player": player_name,
+                    "stat_type": stat_type,
+                    "line": float(line_score),
+                    "odds_type": odds_type,
+                    "start_time": attrs.get("start_time", ""),
+                    "league": league,
+                })
+            except (TypeError, ValueError):
+                pass
+
+    return rows
+
+
+# ── Weather via OpenWeather API ──────────────────────────────
+# Course coordinates for weather lookup
+COURSE_COORDS = {
+    "Augusta National": (33.503, -82.022),
+    "TPC Sawgrass": (30.198, -81.394),
+    "Pebble Beach": (36.567, -121.950),
+    "Torrey Pines South": (32.899, -117.252),
+    "TPC Scottsdale": (33.639, -111.924),
+    "Riviera CC": (34.048, -118.500),
+    "Bay Hill": (28.459, -81.516),
+    "Harbour Town": (32.134, -80.821),
+    "Colonial CC": (32.737, -97.383),
+    "Muirfield Village": (40.100, -83.164),
+    "Quail Hollow": (35.113, -80.853),
+    "East Lake": (33.742, -84.310),
+    "TPC River Highlands": (41.622, -72.648),
+    "Kapalua Plantation": (20.998, -156.658),
+    "Waialae CC": (21.274, -157.763),
+    "PGA National": (26.833, -80.107),
+    "Innisbrook Copperhead": (28.085, -82.750),
+    "TPC San Antonio": (29.607, -98.621),
+    "St Andrews": (56.343, -2.803),
+    "Oakmont CC": (40.527, -79.829),
+    "Pinehurst No. 2": (35.192, -79.472),
+    "Bethpage Black": (40.742, -73.455),
+    "Sedgefield CC": (36.072, -79.819),
+    "TPC Southwind": (35.056, -89.779),
+    "Castle Pines": (39.460, -104.896),
+    "Renaissance Club": (56.051, -2.779),
+}
+
+
+def _get_weather_key() -> str:
+    """Get OpenWeather API key."""
+    try:
+        key = st.secrets.get("OPENWEATHER_API_KEY", "")
+        if key:
+            return key
+    except Exception:
+        pass
+    return os.environ.get("OPENWEATHER_API_KEY", "")
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_course_weather(course_name: str) -> dict:
+    """Fetch current weather for a golf course using OpenWeather API."""
+    api_key = _get_weather_key()
+    if not api_key:
+        return {}
+
+    coords = COURSE_COORDS.get(course_name)
+    if not coords:
+        return {}
+
+    lat, lon = coords
+    try:
+        resp = requests.get(
+            "https://api.openweathermap.org/data/2.5/weather",
+            params={"lat": lat, "lon": lon, "appid": api_key, "units": "imperial"},
+            timeout=10,
+        )
+        if not resp.ok:
+            return {}
+        d = resp.json()
+        return {
+            "temp_f": round(d.get("main", {}).get("temp", 0)),
+            "humidity": d.get("main", {}).get("humidity", 0),
+            "wind_mph": round(d.get("wind", {}).get("speed", 0)),
+            "wind_gust": round(d.get("wind", {}).get("gust", 0) or 0),
+            "conditions": d.get("weather", [{}])[0].get("description", "").title(),
+            "clouds": d.get("clouds", {}).get("all", 0),
+        }
+    except Exception:
+        return {}
 
 
 def _anthropic_client():
@@ -2261,6 +2476,22 @@ def render_sidebar() -> dict:
             </div>
             """, unsafe_allow_html=True)
 
+        # Live weather
+        wx = fetch_course_weather(course)
+        if wx:
+            wind_color = "#f87171" if wx.get("wind_mph", 0) > 15 else "#fbbf24" if wx.get("wind_mph", 0) > 8 else "#4ade80"
+            st.markdown(f"""
+            <div class="glass-card" style="padding:10px;margin:6px 0;">
+                <div style="font-size:0.7rem;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;">Live Weather</div>
+                <div style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;">
+                    <span class="mono" style="font-size:0.75rem;color:#e2e8f0;">{wx.get('temp_f', '--')}°F</span>
+                    <span class="mono" style="font-size:0.75rem;color:{wind_color};">{wx.get('wind_mph', 0)} mph wind</span>
+                    <span class="mono" style="font-size:0.75rem;color:#60a5fa;">{wx.get('humidity', 0)}% humidity</span>
+                </div>
+                <div style="font-size:0.72rem;color:#94a3b8;margin-top:4px;">{wx.get('conditions', '')}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
         st.markdown("---")
 
         # SG Weight visualization
@@ -2283,43 +2514,19 @@ def render_sidebar() -> dict:
 
         st.markdown("---")
 
-        # ── API Keys ─────────────────────────────────────────
-        with st.expander("API Keys", expanded=False):
-            st.markdown(
-                '<div style="font-size:0.72rem;color:#94a3b8;margin-bottom:6px;">'
-                'Enter your keys below. They are stored only in your browser session.</div>',
-                unsafe_allow_html=True,
-            )
-            anthropic_key_input = st.text_input(
-                "Anthropic API Key",
-                type="password",
-                value=st.session_state.get("_anthropic_key", ""),
-                key="_anthropic_key_input",
-                help="Powers the AI Briefing tab. Get one at console.anthropic.com",
-            )
-            if anthropic_key_input:
-                st.session_state["_anthropic_key"] = anthropic_key_input
-
-            odds_key_input = st.text_input(
-                "The Odds API Key",
-                type="password",
-                value=st.session_state.get("_odds_api_key", ""),
-                key="_odds_api_key_input",
-                help="Pulls live sportsbook odds. Get one at the-odds-api.com",
-            )
-            if odds_key_input:
-                st.session_state["_odds_api_key"] = odds_key_input
-
-            # Status indicators
-            ak = _get_anthropic_key()
-            ok = _get_odds_api_key()
-            st.markdown(f"""
-            <div style="font-size:0.7rem;margin-top:6px;">
-                <span style="color:{'#4ade80' if ak else '#f87171'};">{'&#10003;' if ak else '&#10007;'} Anthropic</span>
-                &nbsp;&nbsp;
-                <span style="color:{'#4ade80' if ok else '#f87171'};">{'&#10003;' if ok else '&#10007;'} Odds API</span>
-            </div>
-            """, unsafe_allow_html=True)
+        # ── API Status ────────────────────────────────────────
+        ak = _get_anthropic_key()
+        ok = _get_odds_api_key()
+        wk = _get_weather_key()
+        sk = _get_scraper_api_key()
+        st.markdown(f"""
+        <div style="font-size:0.7rem;margin:4px 0 8px 0;">
+            <span style="color:{'#4ade80' if ak else '#f87171'};">{'&#10003;' if ak else '&#10007;'} Claude AI</span>&nbsp;
+            <span style="color:{'#4ade80' if ok else '#f87171'};">{'&#10003;' if ok else '&#10007;'} Odds</span>&nbsp;
+            <span style="color:{'#4ade80' if wk else '#f87171'};">{'&#10003;' if wk else '&#10007;'} Weather</span>&nbsp;
+            <span style="color:{'#4ade80' if sk else '#f87171'};">{'&#10003;' if sk else '&#10007;'} Scraper</span>
+        </div>
+        """, unsafe_allow_html=True)
 
         st.markdown("---")
 
@@ -2347,7 +2554,7 @@ def render_sidebar() -> dict:
             """, unsafe_allow_html=True)
         elif data_mode == "Live Odds":
             if not _get_odds_api_key():
-                st.warning("Enter your Odds API key above to use Live Odds mode.")
+                st.warning("Add ODDS_API_KEY to .streamlit/secrets.toml for Live Odds.")
 
         st.markdown("---")
 
@@ -2772,13 +2979,63 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
     """Render the PrizePicks Lab tab."""
     st.markdown(section_header("PrizePicks Lab", "&#127183;", "Prop Analysis"), unsafe_allow_html=True)
 
+    # Show live PrizePicks lines if available
+    pp_lines = st.session_state.get("pp_lines", [])
+    if pp_lines:
+        st.markdown("**Live PrizePicks Golf Lines**")
+        st.markdown(
+            '<div style="font-size:0.75rem;color:#94a3b8;margin-bottom:8px;">'
+            f'{len(pp_lines)} props loaded. PrizePicks lines typically go live Tuesday morning.'
+            '</div>', unsafe_allow_html=True,
+        )
+        pp_df = pd.DataFrame(pp_lines)
+        st.dataframe(
+            pp_df[["player", "stat_type", "line", "odds_type"]].rename(
+                columns={"player": "Player", "stat_type": "Stat", "line": "Line", "odds_type": "Type"}
+            ),
+            use_container_width=True,
+            height=250,
+        )
+        st.markdown("---")
+
+        # Auto-populate from live lines
+        pp_players = pp_df["player"].unique().tolist()
+        # Merge with proj_df players
+        all_players = proj_df["player"].tolist()
+        available_pp = [p for p in pp_players if p in all_players]
+        if not available_pp:
+            available_pp = all_players  # fallback to model players
+        pp_stat_types = pp_df["stat_type"].unique().tolist()
+    else:
+        available_pp = proj_df["player"].tolist()
+        pp_stat_types = None
+        if settings["data_mode"] == "Live Odds":
+            st.info("No PrizePicks golf lines available yet. Lines typically go live Tuesday morning of tournament week.")
+
     col1, col2, col3 = st.columns(3)
     with col1:
-        pp_player = st.selectbox("Player", proj_df["player"].tolist(), key="pp_player")
+        pp_player = st.selectbox("Player", available_pp if available_pp else proj_df["player"].tolist(), key="pp_player")
     with col2:
-        stat_type = st.selectbox("Stat Type", list(STAT_STD.keys()), index=0)
+        stat_options = pp_stat_types if pp_stat_types else list(STAT_STD.keys())
+        # Map PP stat types to our internal types
+        pp_to_internal = {
+            "Fantasy Score": "fantasy_score", "Birdies": "birdies",
+            "Bogey-Free Holes": "bogey_free", "Total Strokes": "strokes",
+            "Greens in Regulation": "gir", "Fairways Hit": "fairways",
+            "Putts": "putts",
+        }
+        stat_display = st.selectbox("Stat Type", stat_options, index=0)
+        stat_type = pp_to_internal.get(stat_display, stat_display)
+        if stat_type not in STAT_STD:
+            stat_type = "fantasy_score"
     with col3:
-        line = st.number_input("PrizePicks Line", min_value=0.0, value=25.0, step=0.5)
+        # Try to auto-fill line from live data
+        default_line = 25.0
+        if pp_lines:
+            matching = [l for l in pp_lines if l["player"] == pp_player and l["stat_type"] == stat_display]
+            if matching:
+                default_line = matching[0]["line"]
+        line = st.number_input("PrizePicks Line", min_value=0.0, value=default_line, step=0.5)
 
     p = proj_df[proj_df["player"] == pp_player].iloc[0]
     sg_proj = {k: p[k] for k in ["sg_ott", "sg_app", "sg_arg", "sg_putt"]}
@@ -2901,8 +3158,8 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
             st.markdown(f"""
             <div class="glass-card" style="padding:14px;">
                 <div style="font-size:0.85rem;font-weight:600;color:#4ade80;margin-bottom:8px;">Power Play ({n_picks} picks)</div>
-                <div style="font-size:0.75rem;color:#94a3b8;">Win Prob: <span class="mono text-green">{pp_result['win_prob']*100:.1f}%</span></div>
-                <div style="font-size:0.75rem;color:#94a3b8;">Payout: <span class="mono text-blue">{pp_result['total_return']:.1f}x</span></div>
+                <div style="font-size:0.75rem;color:#94a3b8;">Win Prob: <span class="mono text-green">{pp_result['combo_prob']*100:.1f}%</span></div>
+                <div style="font-size:0.75rem;color:#94a3b8;">Payout: <span class="mono text-blue">{pp_result['payout_multiplier']:.1f}x</span></div>
                 <div style="font-size:0.75rem;color:#94a3b8;">EV: {edge_badge(pp_result['edge'])}</div>
             </div>
             """, unsafe_allow_html=True)
@@ -2911,8 +3168,8 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
             <div class="glass-card" style="padding:14px;">
                 <div style="font-size:0.85rem;font-weight:600;color:#60a5fa;margin-bottom:8px;">Flex Play ({n_picks} picks)</div>
                 <div style="font-size:0.75rem;color:#94a3b8;">Best EV: <span class="mono text-green">{flex_result['edge']*100:+.1f}%</span></div>
-                <div style="font-size:0.75rem;color:#94a3b8;">Payout: <span class="mono text-blue">{flex_result['total_return']:.1f}x</span></div>
-                <div style="font-size:0.75rem;color:#94a3b8;">Play Type: <span class="mono">{flex_result['play_type']}</span></div>
+                <div style="font-size:0.75rem;color:#94a3b8;">Total Return: <span class="mono text-blue">{flex_result.get('total_return', 0):.2f}x</span></div>
+                <div style="font-size:0.75rem;color:#94a3b8;">Play Type: <span class="mono">{flex_result.get('play_type', 'Flex')}</span></div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -3100,7 +3357,7 @@ def main():
     elif settings["data_mode"] == "Live Odds":
         odds_key = _get_odds_api_key()
         if not odds_key:
-            st.warning("Enter your Odds API key in the sidebar to use Live Odds mode. Falling back to demo data.")
+            st.warning("No ODDS_API_KEY in secrets. Falling back to demo data.")
             raw_df = _generate_sample_players(30, settings["course"])
         else:
             with st.spinner("Fetching live odds from The Odds API..."):
@@ -3112,17 +3369,23 @@ def main():
                 st.error(f"Odds API error: {live_odds[0]['error']}")
                 raw_df = _generate_sample_players(30, settings["course"])
             else:
-                # Build raw_df from live odds + generated SG estimates
-                st.success(f"Loaded {len(live_odds)} players from live odds ({live_odds[0].get('event', 'PGA Tour')})")
+                event_name = live_odds[0].get("event", "PGA Tour")
+                st.success(f"Loaded {len(live_odds)} players — {event_name}")
+                # Build SG estimates from odds ranking (lower odds = better player)
+                # Sorted by best_odds descending, so index 0 has worst odds (longshot)
+                # Re-sort by odds ascending (favorites first)
+                live_odds.sort(key=lambda x: x["best_odds"])
                 rng = np.random.RandomState(42)
                 rows = []
-                for i, od in enumerate(live_odds[:40]):  # cap at 40 players
-                    # Estimate SG from odds rank (better odds = higher SG)
-                    rank_factor = 1.8 - i * 0.06
-                    sg_ott = round(rng.normal(0.3, 0.5) + max(0, rank_factor * 0.15), 2)
-                    sg_app = round(rng.normal(0.2, 0.6) + max(0, rank_factor * 0.20), 2)
-                    sg_arg = round(rng.normal(0.1, 0.4) + max(0, rank_factor * 0.10), 2)
-                    sg_putt = round(rng.normal(0.15, 0.7) + max(0, rank_factor * 0.12), 2)
+                n = len(live_odds)
+                for i, od in enumerate(live_odds[:50]):
+                    # Scale SG by position: favorite gets ~2.0, last gets ~-0.5
+                    frac = 1.0 - (i / max(1, n - 1))  # 1.0 for first, 0.0 for last
+                    base_sg = 2.2 * frac - 0.3
+                    sg_ott = round(rng.normal(0.3, 0.4) + max(0, base_sg * 0.18), 2)
+                    sg_app = round(rng.normal(0.2, 0.5) + max(0, base_sg * 0.30), 2)
+                    sg_arg = round(rng.normal(0.1, 0.3) + max(0, base_sg * 0.15), 2)
+                    sg_putt = round(rng.normal(0.15, 0.5) + max(0, base_sg * 0.20), 2)
                     sg_total = round(sg_ott + sg_app + sg_arg + sg_putt, 2)
                     rows.append({
                         "player": od["player"],
@@ -3136,6 +3399,16 @@ def main():
                         "world_rank": i + 1,
                     })
                 raw_df = pd.DataFrame(rows)
+
+        # Also fetch PrizePicks lines for the PrizePicks tab
+        scraper_key = _get_scraper_api_key()
+        with st.spinner("Fetching PrizePicks golf lines..."):
+            pp_lines = fetch_prizepicks_golf_lines(scraper_key)
+        if pp_lines:
+            st.session_state["pp_lines"] = pp_lines
+            st.info(f"Loaded {len(pp_lines)} PrizePicks golf props")
+        else:
+            st.session_state["pp_lines"] = []
     else:
         raw_df = _generate_sample_players(30, settings["course"])
 
