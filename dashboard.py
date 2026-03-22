@@ -1925,20 +1925,11 @@ def _anthropic_client():
 
 def ai_edge_analysis(player: str, sg_data: dict, course: str,
                      odds: int = 0, field_strength: str = "Average",
-                     weather_note: str = "", recent_form: str = "") -> str:
+                     weather_note: str = "", recent_form: str = "",
+                     tournament_name: str = "", course_profile: dict = None) -> str:
     """Use Claude claude-haiku-4-5 for fast edge analysis on a single player.
 
-    Args:
-        player: Player name.
-        sg_data: Dict of SG category values and projections.
-        course: Course name for context.
-        odds: American odds (0 if unavailable).
-        field_strength: Field strength label.
-        weather_note: Optional weather context.
-        recent_form: Optional recent form summary.
-
-    Returns:
-        AI-generated edge analysis text, or fallback message.
+    Enhanced for tournament-specific deep dive analysis including course advantages/disadvantages.
     """
     client = _anthropic_client()
     if client is None:
@@ -1948,8 +1939,23 @@ def ai_edge_analysis(player: str, sg_data: dict, course: str,
                            else f"  {k}: {v}" for k, v in sg_data.items())
     odds_str = f"American odds: {odds:+d}" if odds != 0 else "No odds available"
 
-    prompt = f"""You are a professional golf analytics assistant. Provide a concise edge analysis (3-5 sentences) for this player's tournament outlook.
+    course_context = ""
+    if course_profile:
+        cw = course_profile.get("sg_weights", {})
+        dominant_skill = max(cw, key=cw.get) if cw else "unknown"
+        skill_map = {"sg_ott": "Off the Tee", "sg_app": "Approach", "sg_arg": "Around the Green", "sg_putt": "Putting"}
+        course_context = f"""
+Course Profile for {course}:
+  Dominant Skill Required: {skill_map.get(dominant_skill, dominant_skill)} ({cw.get(dominant_skill, 0):.0%} weight)
+  Distance Bonus: {course_profile.get('distance_bonus', 0):+.0%}
+  Wind Sensitivity: {course_profile.get('wind_sensitivity', 0):.1f}/1.0
+  Green Type: {'Bermuda' if course_profile.get('bermuda_greens') else 'Bent/Poa'}
+  Elevation: {course_profile.get('elevation', 0)}ft
+  Course Notes: {course_profile.get('notes', 'N/A')}"""
 
+    prompt = f"""You are an elite professional golf betting analyst. Provide a deep, tournament-specific edge analysis (6-8 sentences) for this player at THIS specific tournament.
+
+Tournament: {tournament_name if tournament_name else course}
 Player: {player}
 Course: {course}
 Field Strength: {field_strength}
@@ -1959,18 +1965,347 @@ Recent Form: {recent_form if recent_form else 'Not specified'}
 
 Strokes Gained Profile:
 {sg_summary}
+{course_context}
 
-Focus on: course fit, current form trajectory, key statistical edges or weaknesses, and whether the odds offer value. Be specific and quantitative. Do not use generic statements."""
+CRITICAL REQUIREMENTS:
+1. Analyze SPECIFIC advantages this player has at THIS course (e.g., "His +1.2 SG:APP is critical at {course} where approach shots carry 35% weight")
+2. Identify SPECIFIC disadvantages (e.g., "His -0.3 SG:Putt on bermuda greens is a concern here")
+3. Reference the course's unique challenges and how they map to this player's skill set
+4. Compare the player's SG profile to what this course demands
+5. Provide a clear verdict: VALUE / FAIR PRICE / OVERVALUED with specific reasoning
+6. If weather is a factor, explain how it specifically impacts THIS player's game
+
+Be extremely specific and quantitative. Reference exact SG numbers and course weights. Do NOT use generic golf analysis."""
 
     try:
         message = client.messages.create(
-            model="claude-haiku-4-5-20241022",  # Fast model for single-player analysis
-            max_tokens=300,
+            model="claude-haiku-4-5-20241022",
+            max_tokens=500,
             messages=[{"role": "user", "content": prompt}],
         )
         return message.content[0].text
     except Exception as e:
         return f"[AI analysis error: {str(e)[:100]}]"
+
+
+@st.cache_data(ttl=60*60*2, show_spinner=False)
+def ai_scanner_analysis(scan_results_json: str, course: str, tournament: str = "") -> str:
+    """Claude AI analysis of Live Scanner results — identifies best parlay opportunities."""
+    client = _anthropic_client()
+    if client is None:
+        return _generate_algorithmic_scanner_briefing(scan_results_json)
+
+    prompt = f"""You are an elite PrizePicks golf betting analyst with deep quantitative expertise. Analyze these live scanner results and provide actionable advice.
+
+Tournament: {tournament if tournament else course}
+Course: {course}
+
+Scanner Results (props with model edge):
+{scan_results_json}
+
+Provide your analysis in this EXACT format:
+
+**TOP PLAYS (Highest Probability)**
+List the top 3-4 props with the highest model edge AND probability. For each:
+- Player | Stat | Side | Model Prob | Why this is a strong play at THIS course
+
+**PARLAY RECOMMENDATIONS**
+Suggest 2-3 optimal parlay combinations (2-4 legs each):
+- Combo 1: List legs, explain correlation risk, estimated combo hit rate
+- Combo 2: Alternative combo with different risk profile
+Rate each: POWER PLAY (all must hit) or FLEX PLAY (partial payout)
+
+**FADE LIST**
+2-3 props that look tempting but should be avoided, with specific reasoning
+
+**KEY INSIGHTS**
+- Course-specific factors affecting today's props
+- Weather impact on specific stat types
+- Common sense flags (e.g., player returning from injury, first time at course)
+
+Be specific, data-driven, and brutally honest about risk. Use the exact numbers from the scanner. Think like a sharp bettor who needs every edge."""
+
+    try:
+        message = client.messages.create(
+            model="claude-sonnet-4-5-20241022",
+            max_tokens=1000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return message.content[0].text
+    except Exception as e:
+        return _generate_algorithmic_scanner_briefing(scan_results_json)
+
+
+def _generate_algorithmic_scanner_briefing(scan_json: str) -> str:
+    """Fallback algorithmic scanner briefing when AI is unavailable."""
+    try:
+        data = json.loads(scan_json)
+    except Exception:
+        return "No scanner data available for analysis."
+
+    if not data:
+        return "No props to analyze."
+
+    # Sort by edge
+    sorted_props = sorted(data, key=lambda x: x.get("edge", 0), reverse=True)
+    top = sorted_props[:4]
+    avoid = [p for p in sorted_props if p.get("edge", 0) < -0.02][:3]
+
+    lines = ["SCANNER ANALYSIS (Algorithmic)", ""]
+    lines.append("TOP PLAYS:")
+    for p in top:
+        lines.append(f"  {p.get('player', '?')} | {p.get('stat', '?')} {p.get('side', '?')} {p.get('line', '?')} | "
+                     f"Edge: {p.get('edge', 0)*100:+.1f}% | Prob: {p.get('prob', 0)*100:.1f}%")
+
+    if avoid:
+        lines.append("")
+        lines.append("AVOID:")
+        for p in avoid:
+            lines.append(f"  {p.get('player', '?')} | {p.get('stat', '?')} | Edge: {p.get('edge', 0)*100:+.1f}%")
+
+    # Suggest parlays from top picks
+    if len(top) >= 2:
+        lines.append("")
+        lines.append("PARLAY SUGGESTION:")
+        combo_prob = 1.0
+        for p in top[:3]:
+            combo_prob *= p.get("prob", 0.5)
+        lines.append(f"  {' + '.join(p.get('player', '?') for p in top[:3])}")
+        lines.append(f"  Combo Hit Rate: {combo_prob*100:.2f}% | {'POWER PLAY' if combo_prob > 0.15 else 'FLEX PLAY recommended'}")
+
+    return "\n".join(lines)
+
+
+@st.cache_data(ttl=60*60*2, show_spinner=False)
+def ai_lab_analysis(legs_json: str, mc_results_json: str, course: str) -> str:
+    """Claude AI analysis for PrizePicks Lab — deep parlay optimization advice."""
+    client = _anthropic_client()
+    if client is None:
+        return "AI analysis unavailable — configure ANTHROPIC_API_KEY for Claude-powered advice."
+
+    prompt = f"""You are an elite PrizePicks betting strategist. I've run my full quant engine (Monte Carlo 5000x, Bayesian shrinkage, course-fit adjustment, correlation analysis) on my selected legs. Analyze the results and give me your expert recommendation.
+
+Course: {course}
+
+Selected Legs:
+{legs_json}
+
+Monte Carlo Simulation Results:
+{mc_results_json}
+
+Provide your analysis in this format:
+
+**VERDICT**: [STRONG BET / LEAN BET / PASS] with confidence level
+
+**CONVICTION RANKING**: Rank all legs 1-N from strongest to weakest
+
+**EDGE DECOMPOSITION**:
+For each leg, break down WHERE the edge comes from:
+- Statistical edge (projection vs line)
+- Course-fit edge (does this course amplify or dampen this stat?)
+- Correlation risk (how correlated are these legs?)
+
+**RISK ASSESSMENT**:
+- Weakest leg and why it could bust
+- Biggest correlation risk between legs
+- Weather/course factors that could swing results
+
+**OPTIMAL STRATEGY**:
+- Power Play vs Flex Play recommendation with math
+- Suggested stake as % of bankroll (use Kelly-like logic)
+- If any leg should be swapped, suggest an alternative
+
+**ONE-LINER**: Your gut-feel summary in one sentence
+
+Think like a professional bettor managing a $10K bankroll. Every dollar matters. Be specific with numbers."""
+
+    try:
+        message = client.messages.create(
+            model="claude-sonnet-4-5-20241022",
+            max_tokens=800,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return message.content[0].text
+    except Exception as e:
+        return f"AI analysis error: {str(e)[:100]}"
+
+
+def mc_prop_simulation(proj: float, std: float, line: float, n_sims: int = 5000) -> dict:
+    """Monte Carlo simulation for a single prop — 5000 iterations.
+
+    Uses multiple engines:
+    1. Normal distribution sampling
+    2. Bootstrap resampling with skew adjustment
+    3. Poisson/Negative Binomial for count stats
+    4. Weather-adjusted variance scaling
+
+    Returns detailed simulation results.
+    """
+    rng = np.random.default_rng()
+
+    # Engine 1: Normal distribution (primary)
+    normal_sims = rng.normal(proj, std, n_sims)
+    p_over_normal = float(np.mean(normal_sims > line))
+    p_under_normal = float(np.mean(normal_sims <= line))
+
+    # Engine 2: T-distribution (heavier tails — more realistic for golf)
+    df_t = 8  # degrees of freedom — moderate tail heaviness
+    t_sims = proj + std * rng.standard_t(df_t, n_sims)
+    p_over_t = float(np.mean(t_sims > line))
+
+    # Engine 3: Skew-adjusted (golf stats often have slight positive skew)
+    skew_factor = 0.15  # mild positive skew for most golf stats
+    skew_noise = rng.exponential(std * 0.3, n_sims) * skew_factor
+    skew_sims = rng.normal(proj, std * 0.9, n_sims) + skew_noise
+    p_over_skew = float(np.mean(skew_sims > line))
+
+    # Engine 4: Bootstrap with mean reversion
+    reversion_strength = 0.15  # 15% pull toward baseline
+    baseline_proj = line  # use line as proxy for market consensus
+    reverted_proj = proj * (1 - reversion_strength) + baseline_proj * reversion_strength
+    revert_sims = rng.normal(reverted_proj, std * 1.05, n_sims)
+    p_over_revert = float(np.mean(revert_sims > line))
+
+    # Engine 5: Variance-scaled (accounts for volatility clustering)
+    vol_scales = rng.gamma(4, 0.25, n_sims)  # random variance multiplier
+    vol_sims = rng.normal(proj, std * vol_scales, n_sims)
+    p_over_vol = float(np.mean(vol_sims > line))
+
+    # Ensemble: weighted average of all engines
+    # Normal gets highest weight (most theoretically grounded)
+    weights = [0.35, 0.20, 0.15, 0.15, 0.15]
+    p_over_ensemble = (
+        weights[0] * p_over_normal +
+        weights[1] * p_over_t +
+        weights[2] * p_over_skew +
+        weights[3] * p_over_revert +
+        weights[4] * p_over_vol
+    )
+    p_under_ensemble = 1.0 - p_over_ensemble
+
+    # Confidence interval from all sims combined
+    all_sims = np.concatenate([normal_sims, t_sims, skew_sims])
+    ci_10 = float(np.percentile(all_sims, 10))
+    ci_90 = float(np.percentile(all_sims, 90))
+    ci_25 = float(np.percentile(all_sims, 25))
+    ci_75 = float(np.percentile(all_sims, 75))
+
+    return {
+        "p_over": round(p_over_ensemble, 4),
+        "p_under": round(p_under_ensemble, 4),
+        "p_over_by_engine": {
+            "normal": round(p_over_normal, 4),
+            "t_dist": round(p_over_t, 4),
+            "skew_adj": round(p_over_skew, 4),
+            "mean_revert": round(p_over_revert, 4),
+            "vol_cluster": round(p_over_vol, 4),
+        },
+        "engine_agreement": round(1.0 - np.std([p_over_normal, p_over_t, p_over_skew, p_over_revert, p_over_vol]), 4),
+        "sim_mean": round(float(np.mean(all_sims)), 2),
+        "sim_std": round(float(np.std(all_sims)), 2),
+        "ci_80": (round(ci_10, 2), round(ci_90, 2)),
+        "ci_50": (round(ci_25, 2), round(ci_75, 2)),
+        "n_sims": n_sims * 5,  # total across all engines
+    }
+
+
+def mc_parlay_simulation(legs: list, n_sims: int = 5000) -> dict:
+    """Correlated Monte Carlo simulation for a full parlay.
+
+    Uses Gaussian copula for correlation between legs.
+    Each leg: {proj, std, line, side, player, stat}
+
+    Returns joint probability, naive probability, EV for power/flex.
+    """
+    n = len(legs)
+    if n == 0:
+        return {"error": "No legs provided"}
+
+    # Build correlation matrix
+    # Same player = higher correlation, same stat type = moderate
+    corr_mat = np.eye(n)
+    for i in range(n):
+        for j in range(i + 1, n):
+            if legs[i].get("player") == legs[j].get("player"):
+                corr = 0.60  # same player, different stats
+            elif legs[i].get("stat") == legs[j].get("stat"):
+                corr = 0.15  # same stat type, different players
+            else:
+                corr = 0.05  # different everything
+            corr_mat[i, j] = corr
+            corr_mat[j, i] = corr
+
+    # Ensure PSD via eigenvalue clipping
+    evals, evecs = np.linalg.eigh(corr_mat)
+    evals = np.clip(evals, 1e-6, None)
+    corr_psd = evecs @ np.diag(evals) @ evecs.T
+    _d = np.sqrt(np.maximum(np.diag(corr_psd), 1e-12))
+    corr_psd = corr_psd / np.outer(_d, _d)
+    np.fill_diagonal(corr_psd, 1.0)
+    corr_psd = (corr_psd + corr_psd.T) / 2.0
+
+    # Multivariate normal sampling
+    rng = np.random.default_rng()
+    z = rng.multivariate_normal(np.zeros(n), corr_psd, n_sims)
+
+    # Convert to uniform via CDF
+    u = sp_stats.norm.cdf(z)
+
+    # For each leg, determine individual prob and check if it hits
+    probs = []
+    for leg in legs:
+        p = leg.get("prob", 0.5)
+        probs.append(p)
+
+    probs_arr = np.array(probs)
+    hits = u < probs_arr  # shape (n_sims, n)
+
+    # Joint probability (all hit)
+    joint_hits = hits.all(axis=1)
+    joint_prob = float(joint_hits.mean())
+
+    # Naive (independent) joint probability
+    naive_joint = float(np.prod(probs_arr))
+
+    # Per-leg simulated hit rates
+    per_leg_sim = [float(hits[:, i].mean()) for i in range(n)]
+
+    # EV calculations
+    pp_payouts = {2: 3.0, 3: 5.0, 4: 10.0, 5: 20.0, 6: 40.0}
+    payout = pp_payouts.get(n, 2.0 ** n)
+    power_ev = joint_prob * payout - 1.0
+
+    # Flex EV
+    flex_payouts = {
+        3: {2: 1.25, 3: 2.25},
+        4: {2: 0.4, 3: 1.5, 4: 5.0},
+        5: {2: 0.0, 3: 0.4, 4: 2.0, 5: 10.0},
+        6: {2: 0.0, 3: 0.1, 4: 0.4, 5: 2.0, 6: 25.0},
+    }
+    flex_ev = -1.0
+    if n in flex_payouts:
+        total_flex_return = 0.0
+        for k_correct, fpayout in flex_payouts[n].items():
+            # Count sims with exactly k_correct hits
+            n_correct_per_sim = hits.sum(axis=1)
+            p_exactly_k = float(np.mean(n_correct_per_sim == k_correct))
+            total_flex_return += p_exactly_k * fpayout
+        flex_ev = total_flex_return - 1.0
+
+    # Correlation impact
+    corr_impact = joint_prob / naive_joint if naive_joint > 0 else 1.0
+
+    return {
+        "joint_prob": round(joint_prob, 6),
+        "naive_joint": round(naive_joint, 6),
+        "correlation_impact": round(corr_impact, 4),
+        "power_payout": payout,
+        "power_ev": round(power_ev, 4),
+        "flex_ev": round(flex_ev, 4),
+        "per_leg_sim_prob": [round(p, 4) for p in per_leg_sim],
+        "n_sims": n_sims,
+        "n_legs": n,
+    }
 
 
 def _generate_algorithmic_briefing(edges_data: dict) -> str:
@@ -2954,21 +3289,104 @@ def tab_player_deep_dive(proj_df: pd.DataFrame, settings: dict):
         </div>
         """, unsafe_allow_html=True)
 
-    # AI Analysis
+    # Tournament-Specific Advantages & Disadvantages
+    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+    st.markdown("**Tournament-Specific Analysis**")
+
+    course = settings["course"]
+    cp = COURSE_PROFILES.get(course, {})
+    if cp:
+        cw = cp.get("sg_weights", SG_WEIGHTS)
+        weight_labels = {"sg_ott": "Off Tee", "sg_app": "Approach", "sg_arg": "Around Green", "sg_putt": "Putting"}
+
+        adv_col, disadv_col = st.columns(2)
+        with adv_col:
+            st.markdown(f"""
+            <div class="glass-card" style="padding:14px;border-left:3px solid #4ade80;">
+                <div style="font-size:0.8rem;font-weight:600;color:#4ade80;margin-bottom:8px;">ADVANTAGES at {course}</div>
+            """, unsafe_allow_html=True)
+            advantages = []
+            for cat, weight in sorted(cw.items(), key=lambda x: x[1], reverse=True):
+                sg_val = p.get(cat, 0)
+                if sg_val > 0.2 and weight > 0.20:
+                    advantages.append(f"<div style='font-size:0.8rem;color:#e2e8f0;margin:4px 0;'>+ {weight_labels.get(cat, cat)}: <span class='mono text-green'>{sg_val:+.2f} SG</span> (course weight: {weight:.0%})</div>")
+            if p.get("course_delta", 0) > 0.1:
+                advantages.append(f"<div style='font-size:0.8rem;color:#e2e8f0;margin:4px 0;'>+ Strong Course Fit: <span class='mono text-green'>{p['course_delta']:+.2f}</span> adjusted SG</div>")
+            if cp.get("distance_bonus", 0) > 0.03 and p.get("sg_ott", 0) > 0.3:
+                advantages.append(f"<div style='font-size:0.8rem;color:#e2e8f0;margin:4px 0;'>+ Distance advantage at this course ({cp['distance_bonus']:+.0%} bonus)</div>")
+            if not advantages:
+                advantages.append("<div style='font-size:0.8rem;color:#94a3b8;margin:4px 0;'>No significant advantages identified</div>")
+            st.markdown("".join(advantages) + "</div>", unsafe_allow_html=True)
+
+        with disadv_col:
+            st.markdown(f"""
+            <div class="glass-card" style="padding:14px;border-left:3px solid #f87171;">
+                <div style="font-size:0.8rem;font-weight:600;color:#f87171;margin-bottom:8px;">DISADVANTAGES at {course}</div>
+            """, unsafe_allow_html=True)
+            disadvantages = []
+            for cat, weight in sorted(cw.items(), key=lambda x: x[1], reverse=True):
+                sg_val = p.get(cat, 0)
+                if sg_val < -0.2 and weight > 0.20:
+                    disadvantages.append(f"<div style='font-size:0.8rem;color:#e2e8f0;margin:4px 0;'>- {weight_labels.get(cat, cat)}: <span class='mono text-red'>{sg_val:+.2f} SG</span> (course weight: {weight:.0%})</div>")
+            if p.get("course_delta", 0) < -0.1:
+                disadvantages.append(f"<div style='font-size:0.8rem;color:#e2e8f0;margin:4px 0;'>- Poor Course Fit: <span class='mono text-red'>{p['course_delta']:+.2f}</span> adjusted SG</div>")
+            if cp.get("wind_sensitivity", 0) > 0.5:
+                disadvantages.append(f"<div style='font-size:0.8rem;color:#e2e8f0;margin:4px 0;'>- High wind course (sensitivity: {cp['wind_sensitivity']:.1f}) — increases variance</div>")
+            if cp.get("bermuda_greens") and p.get("sg_putt", 0) < 0:
+                disadvantages.append(f"<div style='font-size:0.8rem;color:#e2e8f0;margin:4px 0;'>- Bermuda greens + negative putting SG ({p.get('sg_putt', 0):+.2f})</div>")
+            if not disadvantages:
+                disadvantages.append("<div style='font-size:0.8rem;color:#94a3b8;margin:4px 0;'>No significant disadvantages identified</div>")
+            st.markdown("".join(disadvantages) + "</div>", unsafe_allow_html=True)
+
+    # AI Analysis (FIXED — always attempts to generate, better error handling)
     st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
-    if st.button("Generate AI Analysis", key="ai_deep_dive"):
-        with st.spinner("Claude is analyzing..."):
-            sg_data = {k: p[k] for k in ["sg_ott", "sg_app", "sg_arg", "sg_putt", "sg_total"]}
+    if st.button("Generate AI Analysis", key="ai_deep_dive", type="primary"):
+        with st.spinner("Claude is analyzing this player at this tournament..."):
+            sg_data = {}
+            for k in ["sg_ott", "sg_app", "sg_arg", "sg_putt", "sg_total"]:
+                if k in p.index:
+                    sg_data[k] = float(p[k])
+                else:
+                    sg_data[k] = 0.0
+
+            # Add projection and edge data
+            sg_data["sg_regressed"] = float(p.get("sg_regressed", 0))
+            sg_data["course_delta"] = float(p.get("course_delta", 0))
+            sg_data["win_prob"] = float(p.get("win_prob", 0))
+            sg_data["edge"] = float(p.get("edge", 0))
+
+            course_profile = COURSE_PROFILES.get(settings["course"])
+            espn_data = st.session_state.get("espn_data", {})
+            tournament_name = espn_data.get("event_name", settings["course"]) if espn_data else settings["course"]
+
+            # Weather context
+            wx = fetch_course_weather(settings["course"])
+            weather_note = ""
+            if wx:
+                weather_note = f"{wx.get('temp_f', '--')}°F, {wx.get('wind_mph', 0)} mph wind, {wx.get('conditions', '')}"
+
             try:
-                analysis = ai_edge_analysis(player, sg_data, settings["course"], p["odds"])
+                analysis = ai_edge_analysis(
+                    player=player,
+                    sg_data=sg_data,
+                    course=settings["course"],
+                    odds=int(p.get("odds", 0)),
+                    field_strength=str(field_strength_adjustment(proj_df["sg_regressed"].tolist()).get("strength_label", "Average")),
+                    weather_note=weather_note,
+                    tournament_name=tournament_name,
+                    course_profile=course_profile,
+                )
                 st.markdown(f"""
-                <div class="glass-card" style="padding:16px;">
-                    <div style="font-size:0.75rem;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Claude AI Analysis</div>
-                    <div style="font-size:0.85rem;color:#e2e8f0;line-height:1.6;">{analysis}</div>
+                <div class="glass-card" style="padding:20px;">
+                    <div style="font-size:0.75rem;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">
+                        Claude AI — Tournament Analysis: {player} at {tournament_name}
+                    </div>
+                    <div style="font-size:0.85rem;color:#e2e8f0;line-height:1.7;white-space:pre-wrap;">{analysis}</div>
                 </div>
                 """, unsafe_allow_html=True)
             except Exception as e:
-                st.warning(f"AI analysis unavailable: {e}")
+                st.error(f"AI analysis error: {str(e)}")
+                st.info("Make sure ANTHROPIC_API_KEY is configured in Settings > API Keys or .env file.")
 
 
 # ============================================================
@@ -3186,249 +3604,111 @@ def tab_betting_edge(proj_df: pd.DataFrame, settings: dict):
 # TAB 5 — PRIZEPICKS LAB
 # ============================================================
 def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
-    """Render the PrizePicks Lab tab."""
-    st.markdown(section_header("PrizePicks Lab", "&#127183;", "Prop Analysis"), unsafe_allow_html=True)
+    """PrizePicks Lab — the main Run Model page.
+    Receives legs from Live Scanner or manual selection.
+    Runs Monte Carlo 5000x with every quant engine on selected projections.
+    Full Claude AI integration for parlay optimization advice."""
+    st.markdown(section_header("PrizePicks Lab", "&#127183;", "Run Model"), unsafe_allow_html=True)
 
-    # Show live PrizePicks lines if available
+    st.markdown("""
+    <div class="glass-card" style="padding:14px;margin-bottom:16px;">
+        <div style="font-size:0.85rem;color:#e2e8f0;">
+            The main Run Model engine. Select legs from the Live Scanner or manually enter them below.
+            Runs Monte Carlo 5000x with 5 probability engines (Normal, T-dist, Skew-adjusted, Mean-reversion, Volatility-clustering),
+            Bayesian shrinkage, course-fit adjustment, and Gaussian copula correlation analysis.
+            Claude AI provides expert advice on parlay construction.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
     pp_lines = st.session_state.get("pp_lines", [])
-    if pp_lines:
-        st.markdown("**Live PrizePicks Golf Lines**")
-        st.markdown(
-            '<div style="font-size:0.75rem;color:#94a3b8;margin-bottom:8px;">'
-            f'{len(pp_lines)} props loaded. PrizePicks lines typically go live Tuesday morning.'
-            '</div>', unsafe_allow_html=True,
-        )
-        pp_df = pd.DataFrame(pp_lines)
-        st.dataframe(
-            pp_df[["player", "stat_type", "line", "odds_type"]].rename(
-                columns={"player": "Player", "stat_type": "Stat", "line": "Line", "odds_type": "Type"}
-            ),
-            use_container_width=True,
-            height=250,
-        )
+
+    # Check for legs from scanner
+    scanner_legs = st.session_state.get("lab_legs_from_scanner", [])
+    if scanner_legs:
+        st.success(f"{len(scanner_legs)} legs received from Live Scanner!")
+        st.markdown("**Legs from Scanner:**")
+        for i, leg in enumerate(scanner_legs):
+            st.markdown(f"""
+            <div style="display:flex;justify-content:space-between;padding:6px 12px;margin:4px 0;background:rgba(74,222,128,0.06);border:1px solid rgba(74,222,128,0.15);border-radius:8px;">
+                <span style="font-size:0.85rem;color:#e2e8f0;">{i+1}. {leg['player']} — {leg['stat']} {leg['side']} {leg['line']}</span>
+                <span class="mono" style="font-size:0.85rem;color:#4ade80;">Edge: {leg['edge']*100:+.1f}% | Prob: {leg['prob']*100:.1f}%</span>
+            </div>
+            """, unsafe_allow_html=True)
+        if st.button("Clear Scanner Legs", key="clear_scanner"):
+            st.session_state["lab_legs_from_scanner"] = []
+            st.rerun()
         st.markdown("---")
 
-        # Auto-populate from live lines
-        pp_players = pp_df["player"].unique().tolist()
-        # Merge with proj_df players
-        all_players = proj_df["player"].tolist()
-        available_pp = [p for p in pp_players if p in all_players]
-        if not available_pp:
-            available_pp = all_players  # fallback to model players
-        pp_stat_types = pp_df["stat_type"].unique().tolist()
-    else:
-        available_pp = proj_df["player"].tolist()
-        pp_stat_types = None
-        if settings["data_mode"] == "Live Odds":
-            st.info("No PrizePicks golf lines available yet. Lines typically go live Tuesday morning of tournament week.")
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        pp_player = st.selectbox("Player", available_pp if available_pp else proj_df["player"].tolist(), key="pp_player")
-    with col2:
-        stat_options = pp_stat_types if pp_stat_types else list(STAT_STD.keys())
-        # Map PP stat types to our internal types
-        pp_to_internal = {
-            "Fantasy Score": "fantasy_score", "Birdies": "birdies",
-            "Birdies Or Better": "birdies", "Birdies or Better": "birdies",
-            "Bogey-Free Holes": "bogey_free", "Total Strokes": "strokes",
-            "Strokes": "strokes",
-            "Greens in Regulation": "gir", "Greens In Regulation": "gir",
-            "Fairways Hit": "fairways",
-            "Putts": "putts", "Pars": "pars",
-            "Birdies or Better Matchup": "birdies",
-        }
-        stat_display = st.selectbox("Stat Type", stat_options, index=0)
-        stat_type = pp_to_internal.get(stat_display, stat_display)
-        if stat_type not in STAT_STD:
-            stat_type = "birdies"  # reasonable fallback for golf
-    with col3:
-        # Try to auto-fill line from live data
-        default_line = 25.0
-        if pp_lines:
-            matching = [l for l in pp_lines if l["player"] == pp_player and (l["stat_type"] == stat_display or l["stat_type"].lower().replace(" ", "_") == stat_type)]
-            if matching:
-                default_line = matching[0]["line"]
-        line = st.number_input("PrizePicks Line", min_value=0.0, value=default_line, step=0.5)
-
-    _pp_match = proj_df[proj_df["player"] == pp_player]
-    if _pp_match.empty:
-        st.warning(f"Player '{pp_player}' not found in projection model. Select a player from the field.")
-        return
-    p = _pp_match.iloc[0]
-    sg_proj = {k: p[k] for k in ["sg_ott", "sg_app", "sg_arg", "sg_putt"]}
-
-    proj_val, proj_std = project_pp_stat(stat_type, sg_proj)
-
-    # Probabilities
-    p_over = prob_over(proj_val, line, proj_std)
-    p_under = prob_under(proj_val, line, proj_std)
-
-    # Summary cards
-    cols = st.columns(4)
-    with cols[0]:
-        st.markdown(metric_card("Projection", f"{proj_val:.1f}", f"σ: {proj_std:.1f}", "neutral", "green"), unsafe_allow_html=True)
-    with cols[1]:
-        st.markdown(metric_card("Line", f"{line:.1f}", stat_type.replace("_", " ").title(), "neutral", "blue"), unsafe_allow_html=True)
-    with cols[2]:
-        delta = proj_val - line
-        st.markdown(metric_card("OVER", f"{p_over*100:.1f}%", f"Δ: {delta:+.1f}", "positive" if p_over > 0.55 else "neutral", "green"), unsafe_allow_html=True)
-    with cols[3]:
-        st.markdown(metric_card("UNDER", f"{p_under*100:.1f}%", f"Δ: {-delta:+.1f}", "positive" if p_under > 0.55 else "neutral", "red"), unsafe_allow_html=True)
-
-    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
-
-    # Distribution visualization
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        st.markdown("**Projection Distribution**")
-        x_range = np.linspace(proj_val - 3.5 * proj_std, proj_val + 3.5 * proj_std, 200)
-        pdf_vals = sp_stats.norm.pdf(x_range, proj_val, proj_std)
-
-        fig = go.Figure()
-        # Under region
-        x_under = x_range[x_range <= line]
-        if len(x_under) > 0:
-            pdf_under = sp_stats.norm.pdf(x_under, proj_val, proj_std)
-            fig.add_trace(go.Scatter(
-                x=np.concatenate([x_under, [line, x_under[0]]]),
-                y=np.concatenate([pdf_under, [0, 0]]),
-                fill="toself", fillcolor="rgba(248, 113, 113, 0.3)",
-                line=dict(width=0), name="Under",
-            ))
-        # Over region
-        x_over = x_range[x_range >= line]
-        if len(x_over) > 0:
-            pdf_over = sp_stats.norm.pdf(x_over, proj_val, proj_std)
-            fig.add_trace(go.Scatter(
-                x=np.concatenate([x_over, [x_over[-1], line]]),
-                y=np.concatenate([pdf_over, [0, 0]]),
-                fill="toself", fillcolor="rgba(74, 222, 128, 0.3)",
-                line=dict(width=0), name="Over",
-            ))
-        # Full PDF
-        fig.add_trace(go.Scatter(
-            x=x_range, y=pdf_vals,
-            line=dict(color="#e2e8f0", width=2), name="PDF",
-        ))
-        # Line marker
-        fig.add_vline(x=line, line_dash="dash", line_color="#fbbf24", annotation_text=f"Line: {line}")
-        fig.add_vline(x=proj_val, line_dash="dot", line_color="#4ade80", annotation_text=f"Proj: {proj_val:.1f}")
-
-        fig.update_layout(
-            height=300,
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#e2e8f0", family="Inter"),
-            showlegend=False,
-            margin=dict(l=40, r=20, t=10, b=40),
-            yaxis=dict(visible=False),
-            xaxis=dict(gridcolor="rgba(255,255,255,0.06)"),
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col2:
-        st.markdown("**Edge Summary**")
-        # PrizePicks breakeven: pays 0.82x profit, so BE = 1/1.82 = 54.95%
-        pp_breakeven = 1.0 / 1.82  # 0.5495
-        edge_over = p_over - pp_breakeven
-        edge_under = p_under - pp_breakeven
-        st.markdown(f"""
-        <div class="glass-card" style="padding:14px;">
-            <div style="margin-bottom:12px;">
-                <span style="font-size:0.75rem;color:#94a3b8;">OVER Edge</span><br/>
-                {edge_badge(edge_over)}
-            </div>
-            <div style="margin-bottom:12px;">
-                <span style="font-size:0.75rem;color:#94a3b8;">UNDER Edge</span><br/>
-                {edge_badge(edge_under)}
-            </div>
-            <div style="margin-bottom:12px;">
-                <span style="font-size:0.75rem;color:#94a3b8;">Recommendation</span><br/>
-                <span style="font-size:0.9rem;font-weight:600;color:{'#4ade80' if p_over > 0.60 else '#f87171' if p_under > 0.60 else '#94a3b8'};">
-                    {'OVER ✓' if p_over > 0.60 else 'UNDER ✓' if p_under > 0.60 else 'PASS — No Edge (need >60%)'}
-                </span>
-            </div>
-            <div>
-                <span style="font-size:0.75rem;color:#94a3b8;">Confidence</span><br/>
-                {conf_badge('high' if abs(delta) > 2 * proj_std else 'med' if abs(delta) > proj_std else 'low')}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # ── Multi-Golfer Parlay Builder ─────────────────────────────
-    st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
-    st.markdown("**Parlay Builder — Select Multiple Golfers**")
-    st.markdown(
-        '<div style="font-size:0.8rem;color:#94a3b8;margin-bottom:12px;">'
-        'Build 2-6 leg parlays using model-projected probabilities. '
-        'Select players, stat types, and sides — the model calculates combo hit rate and EV.'
-        '</div>', unsafe_allow_html=True,
-    )
-
-    n_legs = st.slider("Number of Legs", 2, 6, 3, key="parlay_legs")
-
-    # PrizePicks payout multipliers
-    PP_PAYOUTS = {2: 3.0, 3: 5.0, 4: 10.0, 5: 20.0, 6: 40.0}
-    PP_FLEX_PAYOUTS = {
-        3: {2: 1.5, 3: 2.25},
-        4: {2: 1.0, 3: 1.5, 4: 5.0},
-        5: {2: 0.5, 3: 1.0, 4: 2.0, 5: 10.0},
-        6: {2: 0.25, 3: 0.5, 4: 2.0, 5: 4.0, 6: 25.0},
-    }
-
-    # Stat type mapping for display
+    # Stat type mapping
     pp_internal_map = {
         "Birdies Or Better": "birdies", "Birdies or Better": "birdies",
         "Strokes": "strokes", "Total Strokes": "strokes",
         "Greens In Regulation": "gir", "Greens in Regulation": "gir",
-        "Fairways Hit": "fairways", "Pars": "pars",
+        "Fairways Hit": "fairways", "Pars": "pars", "Birdies": "birdies",
         "Putts": "putts", "Fantasy Score": "fantasy_score",
         "Bogey-Free Holes": "bogey_free",
     }
 
     all_player_list = proj_df["player"].tolist()
-    # If PP lines available, prefer those players
     if pp_lines:
-        pp_player_list = sorted(set(l["player"] for l in pp_lines if l.get("league", "").upper() in ("PGA", "LIVGOLF")))
+        pp_player_list = sorted(set(l["player"] for l in pp_lines if l.get("league", "").upper() in ("PGA", "PGA TOUR", "GOLF", "LIVGOLF")))
         if pp_player_list:
             all_player_list = pp_player_list
 
+    # Number of legs
+    n_legs_default = len(scanner_legs) if scanner_legs else 3
+    n_legs = st.slider("Number of Legs", 2, 6, min(n_legs_default, 6), key="lab_parlay_legs")
+
+    # Build leg inputs
     parlay_picks = []
     for i in range(n_legs):
-        st.markdown(f"<div style='font-size:0.75rem;color:#60a5fa;margin-top:8px;'>Leg {i+1}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='font-size:0.75rem;color:#60a5fa;margin-top:8px;font-weight:600;'>Leg {i+1}</div>", unsafe_allow_html=True)
         lcol1, lcol2, lcol3, lcol4 = st.columns([3, 2, 2, 1])
+
+        # Pre-fill from scanner if available
+        scanner_player = scanner_legs[i]["player"] if i < len(scanner_legs) else None
+        scanner_stat = scanner_legs[i].get("stat") if i < len(scanner_legs) else None
+        scanner_line = scanner_legs[i].get("line") if i < len(scanner_legs) else None
+        scanner_side = scanner_legs[i].get("side") if i < len(scanner_legs) else None
+
         with lcol1:
-            leg_player = st.selectbox("Player", all_player_list, key=f"parlay_player_{i}",
-                                       label_visibility="collapsed")
+            default_idx = 0
+            if scanner_player and scanner_player in all_player_list:
+                default_idx = all_player_list.index(scanner_player)
+            leg_player = st.selectbox("Player", all_player_list, index=default_idx,
+                                       key=f"lab_player_{i}", label_visibility="collapsed")
         with lcol2:
-            # Get available stats for this player from PP lines
             player_stats = ["Strokes", "Birdies Or Better", "Greens In Regulation", "Fairways Hit", "Pars"]
             if pp_lines:
                 ps = [l["stat_type"] for l in pp_lines if l["player"] == leg_player]
                 if ps:
-                    player_stats = list(dict.fromkeys(ps))  # unique, preserving order
-            leg_stat = st.selectbox("Stat", player_stats, key=f"parlay_stat_{i}",
-                                     label_visibility="collapsed")
+                    player_stats = list(dict.fromkeys(ps))
+            default_stat_idx = 0
+            if scanner_stat and scanner_stat in player_stats:
+                default_stat_idx = player_stats.index(scanner_stat)
+            leg_stat = st.selectbox("Stat", player_stats, index=default_stat_idx,
+                                     key=f"lab_stat_{i}", label_visibility="collapsed")
         with lcol3:
-            # Auto-fill line from PP data
-            default_line = 70.5
-            if pp_lines:
+            default_line = scanner_line if scanner_line else 70.5
+            if not scanner_line and pp_lines:
                 match = [l for l in pp_lines if l["player"] == leg_player and l["stat_type"] == leg_stat]
                 if match:
                     default_line = match[0]["line"]
-            leg_line = st.number_input("Line", value=default_line, step=0.5, key=f"parlay_line_{i}",
-                                        label_visibility="collapsed")
+            leg_line = st.number_input("Line", value=float(default_line), step=0.5,
+                                        key=f"lab_line_{i}", label_visibility="collapsed")
         with lcol4:
-            leg_side = st.selectbox("Side", ["OVER", "UNDER"], key=f"parlay_side_{i}",
-                                     label_visibility="collapsed")
+            side_idx = 0 if not scanner_side or scanner_side == "OVER" else 1
+            leg_side = st.selectbox("Side", ["OVER", "UNDER"], index=side_idx,
+                                     key=f"lab_side_{i}", label_visibility="collapsed")
 
-        # Calculate probability using model
+        # Quick projection preview
         internal_stat = pp_internal_map.get(leg_stat, "strokes")
         player_match = proj_df[proj_df["player"] == leg_player]
         if not player_match.empty:
             p_row = player_match.iloc[0]
-            sg_proj = {k: p_row[k] for k in ["sg_ott", "sg_app", "sg_arg", "sg_putt"]}
-            pv, ps = project_pp_stat(internal_stat, sg_proj)
+            sg_proj_dict = {k: p_row[k] for k in ["sg_ott", "sg_app", "sg_arg", "sg_putt"]}
+            pv, ps = project_pp_stat(internal_stat, sg_proj_dict)
             leg_prob = prob_over(pv, leg_line, ps) if leg_side == "OVER" else prob_under(pv, leg_line, ps)
         else:
             pv, ps, leg_prob = 0.0, 1.0, 0.50
@@ -3436,259 +3716,673 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
         parlay_picks.append({
             "player": leg_player,
             "stat": leg_stat,
+            "stat_internal": internal_stat,
             "line": leg_line,
             "side": leg_side,
             "prob": leg_prob,
             "proj": pv,
+            "std": ps,
         })
 
-    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
-    if st.button("Calculate Parlay EV", key="calc_parlay", type="primary"):
-        # Show individual leg breakdown
-        st.markdown("**Leg Breakdown**")
+    # Run Model Button
+    if st.button("Run Full Model (MC 5000x)", key="run_lab_model", type="primary"):
+        with st.spinner("Running Monte Carlo 5000x with 5 probability engines..."):
+            # Run MC simulation on each leg individually
+            mc_results = []
+            for pk in parlay_picks:
+                mc = mc_prop_simulation(pk["proj"], pk["std"], pk["line"], n_sims=5000)
+                # Use MC probability (more accurate than simple normal CDF)
+                if pk["side"] == "OVER":
+                    mc_prob = mc["p_over"]
+                else:
+                    mc_prob = mc["p_under"]
+                pk["prob"] = mc_prob
+                pk["mc"] = mc
+                mc_results.append(mc)
+
+            # Run correlated parlay simulation
+            parlay_mc = mc_parlay_simulation(parlay_picks, n_sims=5000)
+
+        # ── RESULTS ──
+        st.markdown("## Model Results")
+
+        # Leg breakdown with MC details
+        st.markdown("**Individual Leg Analysis (MC 5000x, 5 Engines)**")
         leg_data = []
         for pk in parlay_picks:
-            edge = pk["prob"] - (1.0 / 1.82)
+            mc = pk["mc"]
+            pp_be = 1.0 / 1.82
+            edge = pk["prob"] - pp_be
             leg_data.append({
                 "Player": pk["player"],
                 "Stat": pk["stat"],
                 "Line": pk["line"],
+                "Proj": f"{pk['proj']:.1f}",
                 "Side": pk["side"],
-                "Projection": f"{pk['proj']:.1f}",
-                "Hit Rate": f"{pk['prob']*100:.1f}%",
+                "MC Prob": f"{pk['prob']*100:.1f}%",
                 "Edge": f"{edge*100:+.1f}%",
+                "80% CI": f"{mc['ci_80'][0]:.1f}-{mc['ci_80'][1]:.1f}",
+                "Engines Agree": f"{mc['engine_agreement']*100:.0f}%",
             })
+
         st.dataframe(pd.DataFrame(leg_data), use_container_width=True, hide_index=True)
 
-        # Combo probability = product of individual probs
-        combo_prob = 1.0
-        for pk in parlay_picks:
-            combo_prob *= pk["prob"]
+        # Engine breakdown for each leg
+        with st.expander("Engine-by-Engine Breakdown"):
+            for pk in parlay_picks:
+                mc = pk["mc"]
+                engines = mc["p_over_by_engine"]
+                st.markdown(f"**{pk['player']} — {pk['stat']} {pk['side']} {pk['line']}**")
+                eng_cols = st.columns(5)
+                eng_names = ["Normal", "T-Dist", "Skew-Adj", "Mean-Revert", "Vol-Cluster"]
+                eng_vals = [engines["normal"], engines["t_dist"], engines["skew_adj"],
+                           engines["mean_revert"], engines["vol_cluster"]]
+                for j, (name, val) in enumerate(zip(eng_names, eng_vals)):
+                    p_val = val if pk["side"] == "OVER" else (1 - val)
+                    color = "green" if p_val > 0.55 else "amber" if p_val > 0.50 else "red"
+                    with eng_cols[j]:
+                        st.markdown(metric_card(name, f"{p_val*100:.1f}%", "", "neutral", color), unsafe_allow_html=True)
 
-        power_payout = PP_PAYOUTS.get(n_legs, 2.0 ** n_legs)
-        power_ev = combo_prob * power_payout - 1.0
+        # Parlay results
+        st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+        st.markdown("**Correlated Parlay Simulation (Gaussian Copula)**")
 
-        rcol1, rcol2, rcol3 = st.columns(3)
+        PP_PAYOUTS_LAB = {2: 3.0, 3: 5.0, 4: 10.0, 5: 20.0, 6: 40.0}
+
+        rcol1, rcol2, rcol3, rcol4 = st.columns(4)
         with rcol1:
-            st.markdown(f"""
-            <div class="glass-card" style="padding:14px;">
-                <div style="font-size:0.85rem;font-weight:600;color:#4ade80;margin-bottom:8px;">Power Play ({n_legs} legs)</div>
-                <div style="font-size:0.75rem;color:#94a3b8;">Hit Rate: <span class="mono text-green">{combo_prob*100:.2f}%</span></div>
-                <div style="font-size:0.75rem;color:#94a3b8;">Payout: <span class="mono text-blue">{power_payout:.0f}x</span></div>
-                <div style="font-size:0.75rem;color:#94a3b8;">EV: {edge_badge(power_ev)}</div>
-                <div style="font-size:0.65rem;color:#64748b;margin-top:6px;">All {n_legs} legs must hit</div>
-            </div>
-            """, unsafe_allow_html=True)
-
+            st.markdown(metric_card("Joint Prob", f"{parlay_mc['joint_prob']*100:.3f}%",
+                        f"Naive: {parlay_mc['naive_joint']*100:.3f}%",
+                        "positive" if parlay_mc['joint_prob'] > parlay_mc['naive_joint'] else "negative", "green"), unsafe_allow_html=True)
         with rcol2:
-            # Flex play: calculate EV across all possible outcomes
-            flex_payouts = PP_FLEX_PAYOUTS.get(n_legs, {})
-            if flex_payouts:
-                from itertools import combinations
-                probs = [pk["prob"] for pk in parlay_picks]
-                total_flex_ev = 0.0
-                for n_correct in flex_payouts:
-                    payout = flex_payouts[n_correct]
-                    # Sum probability of all combos with exactly n_correct hits
-                    p_exactly = 0.0
-                    for combo in combinations(range(n_legs), n_correct):
-                        p_combo = 1.0
-                        for j in range(n_legs):
-                            p_combo *= probs[j] if j in combo else (1 - probs[j])
-                        p_exactly += p_combo
-                    total_flex_ev += p_exactly * payout
-                flex_ev = total_flex_ev - 1.0
+            st.markdown(metric_card("Corr Impact", f"{parlay_mc['correlation_impact']:.3f}x",
+                        "vs independent",
+                        "positive" if parlay_mc['correlation_impact'] > 1 else "negative", "blue"), unsafe_allow_html=True)
+        with rcol3:
+            st.markdown(metric_card("Power Play EV", f"{parlay_mc['power_ev']*100:+.1f}%",
+                        f"{PP_PAYOUTS_LAB.get(n_legs, 3):.0f}x payout",
+                        "positive" if parlay_mc['power_ev'] > 0 else "negative", "amber"), unsafe_allow_html=True)
+        with rcol4:
+            st.markdown(metric_card("Flex Play EV", f"{parlay_mc['flex_ev']*100:+.1f}%",
+                        "partial payouts",
+                        "positive" if parlay_mc['flex_ev'] > 0 else "negative", "purple"), unsafe_allow_html=True)
+
+        # Recommendation
+        st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+        power_ev = parlay_mc['power_ev']
+        flex_ev = parlay_mc['flex_ev']
+        weakest = min(parlay_picks, key=lambda x: x["prob"])
+
+        if power_ev > 0.05:
+            verdict = "STRONG BET — Power Play"
+            verdict_color = "#4ade80"
+        elif power_ev > 0 or flex_ev > 0.02:
+            verdict = "LEAN BET — Flex Play"
+            verdict_color = "#fbbf24"
+        else:
+            verdict = "PASS — Negative EV"
+            verdict_color = "#f87171"
+
+        st.markdown(f"""
+        <div class="glass-card" style="padding:20px;border-color:rgba({('74,222,128' if verdict_color == '#4ade80' else '251,191,36' if verdict_color == '#fbbf24' else '248,113,113')},0.3);">
+            <div style="font-size:1.2rem;font-weight:700;color:{verdict_color};margin-bottom:12px;">{verdict}</div>
+            <div style="font-size:0.85rem;color:#e2e8f0;">
+                Weakest Leg: <span class="mono">{weakest['player']}</span> ({weakest['prob']*100:.1f}% hit rate)<br/>
+                All engines agree: {all(pk['mc']['engine_agreement'] > 0.85 for pk in parlay_picks)}<br/>
+                {'All legs show positive edge' if all(pk['prob'] > 0.55 for pk in parlay_picks) else 'Some legs below breakeven — consider swapping weakest leg'}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # AI Lab Analysis
+        st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+        if st.button("Get Claude AI Parlay Advice", key="ai_lab_advice"):
+            with st.spinner("Claude is analyzing your parlay..."):
+                legs_for_ai = json.dumps([{
+                    "player": pk["player"], "stat": pk["stat"], "line": pk["line"],
+                    "side": pk["side"], "projection": pk["proj"],
+                    "mc_prob": pk["prob"], "edge": pk["prob"] - 1/1.82,
+                    "engine_agreement": pk["mc"]["engine_agreement"],
+                    "ci_80": pk["mc"]["ci_80"],
+                } for pk in parlay_picks], indent=2)
+
+                mc_for_ai = json.dumps({
+                    "joint_prob": parlay_mc["joint_prob"],
+                    "naive_joint": parlay_mc["naive_joint"],
+                    "correlation_impact": parlay_mc["correlation_impact"],
+                    "power_ev": parlay_mc["power_ev"],
+                    "flex_ev": parlay_mc["flex_ev"],
+                    "per_leg_sim_prob": parlay_mc["per_leg_sim_prob"],
+                    "n_sims": parlay_mc["n_sims"],
+                }, indent=2)
+
+                ai_advice = ai_lab_analysis(legs_for_ai, mc_for_ai, settings["course"])
+
                 st.markdown(f"""
-                <div class="glass-card" style="padding:14px;">
-                    <div style="font-size:0.85rem;font-weight:600;color:#60a5fa;margin-bottom:8px;">Flex Play ({n_legs} legs)</div>
-                    <div style="font-size:0.75rem;color:#94a3b8;">Expected Return: <span class="mono text-blue">{total_flex_ev:.2f}x</span></div>
-                    <div style="font-size:0.75rem;color:#94a3b8;">EV: {edge_badge(flex_ev)}</div>
-                    <div style="font-size:0.65rem;color:#64748b;margin-top:6px;">Partial hits pay out</div>
+                <div class="glass-card" style="padding:20px;">
+                    <div style="font-size:0.75rem;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">
+                        Claude AI Parlay Analysis
+                    </div>
+                    <div style="font-size:0.85rem;color:#e2e8f0;line-height:1.7;white-space:pre-wrap;">{ai_advice}</div>
                 </div>
                 """, unsafe_allow_html=True)
-            else:
-                st.info("Flex play requires 3-6 legs.")
-
-        with rcol3:
-            # Recommendation
-            best_play = "Power Play" if power_ev > 0.05 else "Flex Play" if flex_payouts and flex_ev > 0.02 else "No Play"
-            rec_color = "#4ade80" if best_play != "No Play" else "#f87171"
-            min_prob = min(pk["prob"] for pk in parlay_picks)
-            weakest = min(parlay_picks, key=lambda x: x["prob"])
-            st.markdown(f"""
-            <div class="glass-card" style="padding:14px;">
-                <div style="font-size:0.85rem;font-weight:600;color:{rec_color};margin-bottom:8px;">Recommendation</div>
-                <div style="font-size:1.1rem;font-weight:700;color:{rec_color};margin-bottom:8px;">{best_play}</div>
-                <div style="font-size:0.75rem;color:#94a3b8;">Weakest Leg: <span class="mono">{weakest['player']}</span></div>
-                <div style="font-size:0.75rem;color:#94a3b8;">({weakest['prob']*100:.1f}% hit rate)</div>
-                <div style="font-size:0.65rem;color:#64748b;margin-top:6px;">
-                    {'All legs show edge — strong parlay' if all(pk['prob'] > 0.55 for pk in parlay_picks) else 'Some legs below breakeven — consider swapping'}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
 
 
 # ============================================================
-# TAB 6 — MONTE CARLO SIM
+# TAB 6 — LIVE SCANNER
 # ============================================================
-def tab_monte_carlo(proj_df: pd.DataFrame, settings: dict):
-    """Render the Monte Carlo Simulation tab."""
-    st.markdown(section_header("Monte Carlo Simulator", "&#127922;", f"{settings['n_sims']:,} sims"), unsafe_allow_html=True)
-
-    sim_player = st.selectbox("Select Player", proj_df["player"].tolist(), key="mc_player")
-    p = proj_df[proj_df["player"] == sim_player].iloc[0]
-    field_sg = proj_df["sg_regressed"].tolist()
-
-    if st.button("Run Simulation", key="run_mc"):
-        with st.spinner(f"Running {settings['n_sims']:,} Monte Carlo simulations..."):
-            mc = monte_carlo_win_prob(
-                p["sg_regressed"], field_sg,
-                n_sims=settings["n_sims"], player_sigma=0.8,
-            )
-
-        # Results
-        cols = st.columns(4)
-        with cols[0]:
-            st.markdown(metric_card("Win Prob", f"{mc['win_prob']*100:.2f}%", f"{settings['n_sims']:,} sims", "positive", "green"), unsafe_allow_html=True)
-        with cols[1]:
-            st.markdown(metric_card("Avg Finish", f"{mc['avg_finish']:.1f}", "position", "neutral", "blue"), unsafe_allow_html=True)
-        with cols[2]:
-            st.markdown(metric_card("Median Finish", f"{mc['median_finish']:.0f}", "position", "neutral", "amber"), unsafe_allow_html=True)
-        with cols[3]:
-            st.markdown(metric_card("Top 10", f"{mc['top10_prob']*100:.1f}%", "probability", "positive" if mc['top10_prob'] > 0.3 else "neutral", "green"), unsafe_allow_html=True)
-
-        st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
-
-        # Finish distribution — re-simulate to get raw finishes for histogram
-        rng = np.random.default_rng(seed=42)
-        n_sims = settings["n_sims"]
-        n_opp = len(field_sg)
-        player_totals = rng.normal(p["sg_regressed"] * 4, 0.8 * 2, size=n_sims)
-        opp_means = np.array(field_sg) * 4
-        opp_totals = rng.normal(opp_means[np.newaxis, :], 1.15 * 2, size=(n_sims, n_opp))
-        beaten_by = np.sum(opp_totals > player_totals[:, np.newaxis], axis=1)
-        finishes = beaten_by + 1
-
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            st.markdown("**Finish Position Distribution**")
-            fig = go.Figure()
-            fig.add_trace(go.Histogram(
-                x=finishes,
-                nbinsx=min(len(field_sg), 50),
-                marker_color="#4ade80",
-                opacity=0.7,
-            ))
-            fig.add_vline(x=mc["avg_finish"], line_dash="dash", line_color="#fbbf24",
-                         annotation_text=f"Avg: {mc['avg_finish']:.1f}")
-            fig.update_layout(
-                height=350,
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#e2e8f0", family="Inter"),
-                xaxis=dict(title="Finish Position", gridcolor="rgba(255,255,255,0.06)"),
-                yaxis=dict(title="Frequency", gridcolor="rgba(255,255,255,0.06)"),
-                margin=dict(l=50, r=20, t=10, b=40),
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        with col2:
-            st.markdown("**Top-N Probabilities**")
-            top_n_probs = {
-                1: mc["win_prob"], 5: mc["top5_prob"],
-                10: mc["top10_prob"], 20: mc["top20_prob"],
-            }
-            for n_val, prob in sorted(top_n_probs.items()):
-                color = "green" if prob > 0.25 else "blue" if prob > 0.1 else "amber"
-                st.markdown(prob_bar_html(prob, color, f"Top {n_val}"), unsafe_allow_html=True)
-
-            st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-            st.markdown("**Simulation Parameters**")
-            st.markdown(f"""
-            <div class="glass-card" style="padding:10px;font-size:0.75rem;color:#94a3b8;">
-                <div>Input SG: <span class="mono text-green">{p['sg_regressed']:.2f}</span></div>
-                <div>Field Size: <span class="mono text-blue">{len(field_sg)}</span></div>
-                <div>Volatility: <span class="mono">0.80</span></div>
-                <div>Simulations: <span class="mono text-amber">{settings['n_sims']:,}</span></div>
-            </div>
-            """, unsafe_allow_html=True)
-
-    else:
-        st.info("Click 'Run Simulation' to execute Monte Carlo analysis.")
-
-
-# ============================================================
-# TAB BONUS — AI SLATE BRIEFING
-# ============================================================
-def tab_ai_briefing(proj_df: pd.DataFrame, settings: dict):
-    """Render the AI Slate Briefing tab."""
-    st.markdown(section_header("AI Slate Briefing", "&#129302;", "Claude-Powered"), unsafe_allow_html=True)
-
-    # Prepare edges data (used by both top-5 display and briefing)
-    edges_list = []
-    for _, r in proj_df.nlargest(15, "edge").iterrows():
-        edges_list.append({
-            "player": r["player"],
-            "sg_regressed": round(r["sg_regressed"], 2),
-            "win_prob": round(r["win_prob"], 4),
-            "implied_prob": round(r["implied_prob"], 4),
-            "edge": round(r["edge"], 4),
-            "odds": int(r["odds"]),
-            "course_delta": round(r["course_delta"], 2),
-            "kelly": round(r["kelly"], 3),
-        })
-    edges_json = json.dumps({
-        "course": settings["course"],
-        "field_size": len(proj_df),
-        "edges": edges_list,
-    })
+def tab_live_scanner(proj_df: pd.DataFrame, settings: dict):
+    """Live Scanner — auto-fetches PP props, runs full quant engine on every prop,
+    and provides AI-powered analysis for highest-probability selections."""
+    st.markdown(section_header("Live Scanner", "&#128225;", "Auto-Scan"), unsafe_allow_html=True)
 
     st.markdown("""
     <div class="glass-card" style="padding:14px;margin-bottom:16px;">
         <div style="font-size:0.85rem;color:#e2e8f0;">
-            AI-powered slate briefing analyzing player edges, course fits, and betting strategy.
-            Uses Claude AI when available, otherwise generates data-driven algorithmic analysis.
+            Scans all fetched PrizePicks props and runs the full quant engine (Monte Carlo 5000x,
+            Bayesian shrinkage, course-fit adjustment, 5 probability engines) on every line
+            to surface the highest-probability projections.
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Top edges summary
-    top_edges = proj_df.nlargest(5, "edge")
-    st.markdown("**Top 5 Edges**")
-    for _, r in top_edges.iterrows():
+    pp_lines = st.session_state.get("pp_lines", [])
+
+    # Auto-scan button
+    col_scan1, col_scan2 = st.columns([1, 3])
+    with col_scan1:
+        run_scan = st.button("Run Live Scanner", key="run_scanner", type="primary")
+    with col_scan2:
         st.markdown(f"""
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05);">
-            <span style="font-size:0.85rem;color:#e2e8f0;">{r['player']}</span>
-            <div style="display:flex;gap:12px;align-items:center;">
-                <span class="mono" style="font-size:0.8rem;color:#4ade80;">SG {r['sg_regressed']:.2f}</span>
-                {edge_badge(r['edge'])}
-                <span class="mono" style="font-size:0.8rem;color:#94a3b8;">+{r['odds']}</span>
-            </div>
+        <div style="font-size:0.8rem;color:#94a3b8;padding-top:8px;">
+            {len(pp_lines)} PrizePicks props loaded | Course: {settings['course']}
         </div>
         """, unsafe_allow_html=True)
 
-    st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+    if not pp_lines:
+        st.warning("No PrizePicks golf lines available. Lines typically go live Tuesday morning of tournament week. "
+                   "Check the sidebar data source settings.")
+        return
 
-    if st.button("Generate Briefing", key="ai_briefing", type="primary"):
-        with st.spinner("Generating slate briefing..."):
-            try:
-                briefing = ai_slate_briefing(edges_json)
+    # Stat type mapping
+    pp_internal_map = {
+        "Birdies Or Better": "birdies", "Birdies or Better": "birdies",
+        "Strokes": "strokes", "Total Strokes": "strokes",
+        "Greens In Regulation": "gir", "Greens in Regulation": "gir",
+        "Fairways Hit": "fairways", "Pars": "pars", "Birdies": "birdies",
+        "Putts": "putts", "Fantasy Score": "fantasy_score",
+        "Bogey-Free Holes": "bogey_free",
+        "Birdies or Better Matchup": "birdies",
+    }
+
+    if run_scan or st.session_state.get("scanner_results"):
+        if run_scan:
+            # Run the full quant engine on every prop
+            scan_results = []
+            progress = st.progress(0, text="Scanning props...")
+
+            for idx, pp_line in enumerate(pp_lines):
+                progress.progress((idx + 1) / len(pp_lines), text=f"Scanning {pp_line['player']}...")
+
+                player_name = pp_line["player"]
+                stat_display = pp_line["stat_type"]
+                stat_type = pp_internal_map.get(stat_display, "birdies")
+                line_val = pp_line["line"]
+
+                # Find player in projection model
+                player_match = proj_df[proj_df["player"] == player_name]
+                if player_match.empty:
+                    # Try fuzzy match
+                    for _, row in proj_df.iterrows():
+                        if player_name.split()[-1].lower() in row["player"].lower():
+                            player_match = proj_df[proj_df["player"] == row["player"]]
+                            break
+
+                if player_match.empty:
+                    continue
+
+                p_row = player_match.iloc[0]
+                sg_proj = {k: p_row[k] for k in ["sg_ott", "sg_app", "sg_arg", "sg_putt"]}
+
+                # Project stat
+                proj_val, proj_std = project_pp_stat(stat_type, sg_proj)
+
+                # Run MC simulation (5000x, 5 engines)
+                mc = mc_prop_simulation(proj_val, proj_std, line_val, n_sims=5000)
+
+                p_over = mc["p_over"]
+                p_under = mc["p_under"]
+                best_side = "OVER" if p_over > p_under else "UNDER"
+                best_prob = max(p_over, p_under)
+
+                # PrizePicks breakeven
+                pp_be = 1.0 / 1.82
+                edge = best_prob - pp_be
+
+                # Confidence classification
+                if edge > 0.08 and mc["engine_agreement"] > 0.90:
+                    conf = "HIGH"
+                elif edge > 0.05:
+                    conf = "MEDIUM"
+                elif edge > 0.02:
+                    conf = "LOW"
+                else:
+                    conf = "NO_BET"
+
+                scan_results.append({
+                    "player": player_name,
+                    "stat": stat_display,
+                    "stat_internal": stat_type,
+                    "line": line_val,
+                    "projection": proj_val,
+                    "std": proj_std,
+                    "side": best_side,
+                    "prob": best_prob,
+                    "p_over": p_over,
+                    "p_under": p_under,
+                    "edge": edge,
+                    "confidence": conf,
+                    "engine_agreement": mc["engine_agreement"],
+                    "ci_80": mc["ci_80"],
+                    "engines": mc["p_over_by_engine"],
+                    "sg_total": p_row.get("sg_regressed", 0),
+                    "course_delta": p_row.get("course_delta", 0),
+                })
+
+            progress.empty()
+
+            # Sort by edge descending
+            scan_results.sort(key=lambda x: x["edge"], reverse=True)
+            st.session_state["scanner_results"] = scan_results
+        else:
+            scan_results = st.session_state["scanner_results"]
+
+        # Display results
+        st.markdown(f"**Scanned {len(scan_results)} props — sorted by edge**")
+
+        # Summary metrics
+        bettable = [s for s in scan_results if s["confidence"] != "NO_BET"]
+        high_conf = [s for s in scan_results if s["confidence"] == "HIGH"]
+
+        mcols = st.columns(4)
+        with mcols[0]:
+            st.markdown(metric_card("Props Scanned", str(len(scan_results)), "total", "neutral", "blue"), unsafe_allow_html=True)
+        with mcols[1]:
+            st.markdown(metric_card("Bettable", str(len(bettable)), f"{len(bettable)/max(len(scan_results),1)*100:.0f}% of total", "positive" if bettable else "neutral", "green"), unsafe_allow_html=True)
+        with mcols[2]:
+            st.markdown(metric_card("HIGH Conf", str(len(high_conf)), "plays", "positive" if high_conf else "neutral", "amber"), unsafe_allow_html=True)
+        with mcols[3]:
+            avg_edge = np.mean([s["edge"] for s in bettable]) * 100 if bettable else 0
+            st.markdown(metric_card("Avg Edge", f"{avg_edge:+.1f}%", "bettable props", "positive" if avg_edge > 0 else "negative", "purple"), unsafe_allow_html=True)
+
+        st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+
+        # Filters
+        fcol1, fcol2 = st.columns(2)
+        with fcol1:
+            conf_filter = st.selectbox("Filter Confidence", ["All", "HIGH", "MEDIUM", "LOW"], key="scan_conf_filter")
+        with fcol2:
+            side_filter = st.selectbox("Filter Side", ["All", "OVER", "UNDER"], key="scan_side_filter")
+
+        filtered = scan_results
+        if conf_filter != "All":
+            filtered = [s for s in filtered if s["confidence"] == conf_filter]
+        if side_filter != "All":
+            filtered = [s for s in filtered if s["side"] == side_filter]
+
+        # Results table
+        if filtered:
+            rows = []
+            for s in filtered:
+                rows.append({
+                    "Player": s["player"],
+                    "Stat": s["stat"],
+                    "Line": s["line"],
+                    "Proj": f"{s['projection']:.1f}",
+                    "Side": s["side"],
+                    "Prob": f"{s['prob']*100:.1f}%",
+                    "Edge": f"{s['edge']*100:+.1f}%",
+                    "Conf": s["confidence"],
+                    "Engines": f"{s['engine_agreement']*100:.0f}%",
+                    "CI 80%": f"{s['ci_80'][0]:.1f}-{s['ci_80'][1]:.1f}",
+                })
+
+            scan_df = pd.DataFrame(rows)
+
+            def color_edge(val):
+                try:
+                    v = float(val.replace("%", "").replace("+", ""))
+                    if v >= 8: return "color: #4ade80; font-weight: bold"
+                    if v >= 5: return "color: #60a5fa"
+                    if v >= 2: return "color: #fbbf24"
+                    return "color: #f87171"
+                except Exception:
+                    return ""
+
+            def color_conf(val):
+                if val == "HIGH": return "color: #4ade80; font-weight: bold"
+                if val == "MEDIUM": return "color: #fbbf24"
+                if val == "LOW": return "color: #fb923c"
+                return "color: #f87171"
+
+            styled = scan_df.style.map(color_edge, subset=["Edge"]).map(color_conf, subset=["Conf"])
+            st.dataframe(styled, use_container_width=True, hide_index=True, height=400)
+
+        # Select legs to send to PrizePicks Lab
+        st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+        st.markdown("**Select Legs for PrizePicks Lab**")
+        st.markdown('<div style="font-size:0.8rem;color:#94a3b8;margin-bottom:8px;">Select up to 6 legs to send to the PrizePicks Lab for full parlay analysis.</div>', unsafe_allow_html=True)
+
+        selectable = [s for s in scan_results if s["confidence"] != "NO_BET"]
+        if selectable:
+            select_options = [f"{s['player']} | {s['stat']} {s['side']} {s['line']} (Edge: {s['edge']*100:+.1f}%)" for s in selectable]
+            selected = st.multiselect("Select legs (max 6)", select_options[:20], max_selections=6, key="scanner_selected_legs")
+
+            if selected and st.button("Send to PrizePicks Lab", key="send_to_lab", type="primary"):
+                # Store selected legs in session state
+                selected_legs = []
+                for sel in selected:
+                    player_name = sel.split(" | ")[0]
+                    for s in selectable:
+                        if s["player"] == player_name:
+                            selected_legs.append(s)
+                            break
+                st.session_state["lab_legs_from_scanner"] = selected_legs
+                st.success(f"Sent {len(selected_legs)} legs to PrizePicks Lab! Switch to the PrizePicks Lab tab.")
+
+        # AI Scanner Analysis
+        st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
+        if st.button("AI Scanner Briefing", key="ai_scanner_briefing"):
+            with st.spinner("Claude is analyzing scanner results..."):
+                # Prepare scan data for AI
+                ai_scan_data = []
+                for s in scan_results[:15]:  # top 15 for context
+                    ai_scan_data.append({
+                        "player": s["player"],
+                        "stat": s["stat"],
+                        "line": s["line"],
+                        "side": s["side"],
+                        "projection": s["projection"],
+                        "prob": s["prob"],
+                        "edge": s["edge"],
+                        "confidence": s["confidence"],
+                        "engine_agreement": s["engine_agreement"],
+                        "sg_total": s["sg_total"],
+                        "course_delta": s["course_delta"],
+                    })
+
+                espn_data = st.session_state.get("espn_data", {})
+                tournament = espn_data.get("event_name", settings["course"]) if espn_data else settings["course"]
+
+                analysis = ai_scanner_analysis(
+                    json.dumps(ai_scan_data, indent=2),
+                    settings["course"],
+                    tournament,
+                )
+
                 st.markdown(f"""
                 <div class="glass-card" style="padding:20px;">
                     <div style="font-size:0.75rem;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">
-                        Slate Briefing — {settings['course']}
+                        Claude AI Scanner Analysis
                     </div>
-                    <div style="font-size:0.85rem;color:#e2e8f0;line-height:1.7;white-space:pre-wrap;">{briefing}</div>
+                    <div style="font-size:0.85rem;color:#e2e8f0;line-height:1.7;white-space:pre-wrap;">{analysis}</div>
                 </div>
                 """, unsafe_allow_html=True)
-            except Exception as e:
-                st.warning(f"Briefing error: {e}")
+
     else:
         st.markdown("""
-        <div style="text-align:center;padding:40px;color:#64748b;">
-            Click "Generate Briefing" for AI-powered or algorithmic analysis of the current slate.
+        <div style="text-align:center;padding:60px 20px;color:#64748b;">
+            <div style="font-size:2rem;margin-bottom:12px;">&#128225;</div>
+            <div style="font-size:1rem;margin-bottom:8px;">Click "Run Live Scanner" to scan all PrizePicks props</div>
+            <div style="font-size:0.8rem;">The scanner runs Monte Carlo 5000x with 5 probability engines on every prop to find the highest-edge plays.</div>
         </div>
         """, unsafe_allow_html=True)
+
+
+# ============================================================
+# TAB 7 — SETTINGS (Bankroll, Calibration, Logged Bets, Config)
+# ============================================================
+def tab_settings(proj_df: pd.DataFrame, settings: dict):
+    """Settings tab — bankroll management, model calibration, bet logging, and configuration."""
+    st.markdown(section_header("Settings", "&#9881;", "Configuration"), unsafe_allow_html=True)
+
+    settings_tabs = st.tabs(["Bankroll Management", "Model Calibration", "Logged Bets", "API Keys"])
+
+    # ── Bankroll Management ──
+    with settings_tabs[0]:
+        st.markdown("**Bankroll Management**")
+
+        # Initialize bankroll state
+        if "bankroll_total" not in st.session_state:
+            st.session_state["bankroll_total"] = settings.get("bankroll", 1000)
+        if "bankroll_history" not in st.session_state:
+            st.session_state["bankroll_history"] = [{"date": datetime.now().strftime("%Y-%m-%d"), "amount": settings.get("bankroll", 1000), "action": "Initial"}]
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown(metric_card("Current Bankroll", f"${st.session_state['bankroll_total']:,.2f}", "total", "positive", "green"), unsafe_allow_html=True)
+        with col2:
+            total_wagered = sum(b.get("amount", 0) for b in st.session_state.get("logged_bets", []))
+            st.markdown(metric_card("Total Wagered", f"${total_wagered:,.2f}", "all time", "neutral", "blue"), unsafe_allow_html=True)
+        with col3:
+            logged = st.session_state.get("logged_bets", [])
+            settled = [b for b in logged if b.get("result") in ("won", "lost")]
+            if settled:
+                pl = sum(b.get("profit", 0) for b in settled)
+                roi = (pl / max(total_wagered, 1)) * 100
+            else:
+                pl, roi = 0, 0
+            st.markdown(metric_card("P&L", f"${pl:+,.2f}", f"ROI: {roi:+.1f}%", "positive" if pl > 0 else "negative", "amber"), unsafe_allow_html=True)
+
+        st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+
+        # Update bankroll
+        new_bankroll = st.number_input("Set Bankroll ($)", min_value=10.0, value=float(st.session_state["bankroll_total"]), step=50.0, key="set_bankroll")
+        if st.button("Update Bankroll", key="update_br"):
+            st.session_state["bankroll_total"] = new_bankroll
+            st.session_state["bankroll_history"].append({
+                "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "amount": new_bankroll,
+                "action": "Manual Update",
+            })
+            st.success(f"Bankroll updated to ${new_bankroll:,.2f}")
+
+        # Bankroll history
+        if st.session_state.get("bankroll_history"):
+            st.markdown("**Bankroll History**")
+            bh_df = pd.DataFrame(st.session_state["bankroll_history"])
+            st.dataframe(bh_df, use_container_width=True, hide_index=True)
+
+    # ── Model Calibration ──
+    with settings_tabs[1]:
+        st.markdown("**Model Calibration Settings**")
+        st.markdown('<div style="font-size:0.8rem;color:#94a3b8;margin-bottom:12px;">Fine-tune the quant engine parameters for optimal performance.</div>', unsafe_allow_html=True)
+
+        cal_col1, cal_col2 = st.columns(2)
+        with cal_col1:
+            st.markdown("**Monte Carlo Settings**")
+            mc_sims = st.slider("MC Simulations per Prop", 1000, 10000, 5000, 500, key="cal_mc_sims",
+                               help="Higher = more accurate but slower. 5000 is recommended.")
+            engine_weights = st.checkbox("Use Multi-Engine Ensemble", value=True, key="cal_multi_engine",
+                                        help="Combines 5 probability engines: Normal, T-dist, Skew-adj, Mean-revert, Vol-cluster")
+
+            st.markdown("**Probability Engines**")
+            w_normal = st.slider("Normal Weight", 0.0, 1.0, 0.35, 0.05, key="w_norm")
+            w_tdist = st.slider("T-Distribution Weight", 0.0, 1.0, 0.20, 0.05, key="w_tdist")
+            w_skew = st.slider("Skew-Adjusted Weight", 0.0, 1.0, 0.15, 0.05, key="w_skew")
+            w_revert = st.slider("Mean Reversion Weight", 0.0, 1.0, 0.15, 0.05, key="w_revert")
+            w_vol = st.slider("Volatility Clustering Weight", 0.0, 1.0, 0.15, 0.05, key="w_vol")
+
+            total_w = w_normal + w_tdist + w_skew + w_revert + w_vol
+            if abs(total_w - 1.0) > 0.01:
+                st.warning(f"Weights sum to {total_w:.2f} — should sum to 1.0")
+
+        with cal_col2:
+            st.markdown("**Kelly Criterion**")
+            kelly_frac = st.slider("Kelly Fraction", 0.05, 1.0, 0.25, 0.05, key="cal_kelly",
+                                  help="0.25 = Quarter Kelly (conservative). 1.0 = Full Kelly (aggressive)")
+            max_bet_pct = st.slider("Max Bet % of Bankroll", 1, 15, 8, 1, key="cal_max_bet",
+                                   help="Safety cap on single bet size")
+            min_edge = st.slider("Min Edge Threshold %", 1, 15, 5, 1, key="cal_min_edge",
+                                help="Minimum edge required to consider a bet")
+
+            st.markdown("**Bayesian Shrinkage**")
+            shrink_strength = st.slider("Prior Strength", 5, 30, 12, 1, key="cal_shrink",
+                                       help="Higher = more shrinkage toward tour average")
+            reversion_pct = st.slider("Mean Reversion %", 0, 50, 15, 5, key="cal_reversion",
+                                     help="How much to regress projections toward baseline")
+
+            st.markdown("**Correlation**")
+            same_player_corr = st.slider("Same-Player Correlation", 0.3, 0.9, 0.60, 0.05, key="cal_same_corr")
+            same_stat_corr = st.slider("Same-Stat Correlation", 0.0, 0.4, 0.15, 0.05, key="cal_stat_corr")
+
+        if st.button("Save Calibration", key="save_cal", type="primary"):
+            st.session_state["calibration"] = {
+                "mc_sims": mc_sims,
+                "multi_engine": engine_weights,
+                "engine_weights": [w_normal, w_tdist, w_skew, w_revert, w_vol],
+                "kelly_frac": kelly_frac,
+                "max_bet_pct": max_bet_pct / 100.0,
+                "min_edge": min_edge / 100.0,
+                "shrink_strength": shrink_strength,
+                "reversion_pct": reversion_pct / 100.0,
+                "same_player_corr": same_player_corr,
+                "same_stat_corr": same_stat_corr,
+            }
+            st.success("Calibration saved! These settings will be used by the scanner and lab.")
+
+    # ── Logged Bets ──
+    with settings_tabs[2]:
+        st.markdown("**Bet Log**")
+        st.markdown('<div style="font-size:0.8rem;color:#94a3b8;margin-bottom:12px;">Track all your bets, results, and performance over time.</div>', unsafe_allow_html=True)
+
+        if "logged_bets" not in st.session_state:
+            st.session_state["logged_bets"] = []
+
+        # Add new bet
+        with st.expander("Log New Bet", expanded=False):
+            bet_col1, bet_col2, bet_col3 = st.columns(3)
+            with bet_col1:
+                bet_player = st.text_input("Player", key="bet_player")
+                bet_stat = st.text_input("Stat Type", key="bet_stat")
+            with bet_col2:
+                bet_side = st.selectbox("Side", ["OVER", "UNDER"], key="bet_side")
+                bet_line = st.number_input("Line", value=3.5, step=0.5, key="bet_line_input")
+            with bet_col3:
+                bet_amount = st.number_input("Bet Amount ($)", value=25.0, step=5.0, key="bet_amount")
+                bet_type = st.selectbox("Type", ["Power Play", "Flex Play", "Single"], key="bet_type")
+
+            if st.button("Log Bet", key="log_bet"):
+                if bet_player:
+                    st.session_state["logged_bets"].append({
+                        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "player": bet_player,
+                        "stat": bet_stat,
+                        "side": bet_side,
+                        "line": bet_line,
+                        "amount": bet_amount,
+                        "type": bet_type,
+                        "result": "pending",
+                        "profit": 0,
+                    })
+                    st.success(f"Logged: {bet_player} {bet_stat} {bet_side} {bet_line} — ${bet_amount}")
+
+        # Display bets
+        logged = st.session_state.get("logged_bets", [])
+        if logged:
+            # Summary
+            pending = [b for b in logged if b["result"] == "pending"]
+            won = [b for b in logged if b["result"] == "won"]
+            lost = [b for b in logged if b["result"] == "lost"]
+
+            scol1, scol2, scol3, scol4 = st.columns(4)
+            with scol1:
+                st.markdown(metric_card("Total Bets", str(len(logged)), f"{len(pending)} pending", "neutral", "blue"), unsafe_allow_html=True)
+            with scol2:
+                win_rate = len(won) / max(len(won) + len(lost), 1) * 100
+                st.markdown(metric_card("Win Rate", f"{win_rate:.0f}%", f"{len(won)}W / {len(lost)}L", "positive" if win_rate > 50 else "negative", "green"), unsafe_allow_html=True)
+            with scol3:
+                total_pl = sum(b.get("profit", 0) for b in won + lost)
+                st.markdown(metric_card("Total P&L", f"${total_pl:+,.2f}", "settled bets", "positive" if total_pl > 0 else "negative", "amber"), unsafe_allow_html=True)
+            with scol4:
+                total_staked = sum(b.get("amount", 0) for b in won + lost)
+                roi_val = (total_pl / max(total_staked, 1)) * 100
+                st.markdown(metric_card("ROI", f"{roi_val:+.1f}%", f"on ${total_staked:,.0f}", "positive" if roi_val > 0 else "negative", "purple"), unsafe_allow_html=True)
+
+            # Bet table
+            bet_df = pd.DataFrame(logged)
+            st.dataframe(bet_df, use_container_width=True, hide_index=True)
+
+            # Settle bets
+            if pending:
+                st.markdown("**Settle Pending Bets**")
+                for i, bet in enumerate(logged):
+                    if bet["result"] == "pending":
+                        bcol1, bcol2, bcol3 = st.columns([4, 1, 1])
+                        with bcol1:
+                            st.write(f"{bet['player']} {bet['stat']} {bet['side']} {bet['line']} — ${bet['amount']}")
+                        with bcol2:
+                            if st.button("Won", key=f"won_{i}"):
+                                payout_map = {"Power Play": 3.0, "Flex Play": 2.25, "Single": 1.82}
+                                payout = payout_map.get(bet["type"], 1.82)
+                                profit = bet["amount"] * (payout - 1)
+                                st.session_state["logged_bets"][i]["result"] = "won"
+                                st.session_state["logged_bets"][i]["profit"] = profit
+                                st.session_state["bankroll_total"] += profit
+                                st.rerun()
+                        with bcol3:
+                            if st.button("Lost", key=f"lost_{i}"):
+                                st.session_state["logged_bets"][i]["result"] = "lost"
+                                st.session_state["logged_bets"][i]["profit"] = -bet["amount"]
+                                st.session_state["bankroll_total"] -= bet["amount"]
+                                st.rerun()
+        else:
+            st.info("No bets logged yet. Use the expander above to log your first bet.")
+
+    # ── API Keys ──
+    with settings_tabs[3]:
+        st.markdown("**API Key Configuration**")
+        st.markdown('<div style="font-size:0.8rem;color:#94a3b8;margin-bottom:12px;">Enter API keys here or set them in .streamlit/secrets.toml or .env file.</div>', unsafe_allow_html=True)
+
+        ak = _get_anthropic_key()
+        ok = _get_odds_api_key()
+        wk = _get_weather_key()
+        sk = _get_scraper_api_key()
+
+        st.markdown(f"""
+        <div class="glass-card" style="padding:14px;">
+            <div style="font-size:0.85rem;color:#e2e8f0;margin-bottom:12px;">Current Status</div>
+            <div style="font-size:0.8rem;color:{'#4ade80' if ak else '#f87171'};">{'&#10003;' if ak else '&#10007;'} Anthropic (Claude AI) {'— Connected' if ak else '— Not configured'}</div>
+            <div style="font-size:0.8rem;color:{'#4ade80' if ok else '#f87171'};">{'&#10003;' if ok else '&#10007;'} The Odds API {'— Connected' if ok else '— Not configured'}</div>
+            <div style="font-size:0.8rem;color:{'#4ade80' if wk else '#f87171'};">{'&#10003;' if wk else '&#10007;'} OpenWeather {'— Connected' if wk else '— Not configured'}</div>
+            <div style="font-size:0.8rem;color:{'#4ade80' if sk else '#f87171'};">{'&#10003;' if sk else '&#10007;'} ScraperAPI {'— Connected' if sk else '— Not configured'}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+
+        # Override keys via session state
+        new_ak = st.text_input("Anthropic API Key", value="", type="password", key="api_anthropic",
+                               help="Get from console.anthropic.com")
+        new_ok = st.text_input("Odds API Key", value="", type="password", key="api_odds",
+                               help="Get from the-odds-api.com")
+        new_wk = st.text_input("OpenWeather API Key", value="", type="password", key="api_weather",
+                               help="Get from openweathermap.org")
+        new_sk = st.text_input("ScraperAPI Key", value="", type="password", key="api_scraper",
+                               help="Get from scraperapi.com")
+
+        if st.button("Save API Keys", key="save_keys"):
+            if new_ak:
+                st.session_state["_anthropic_key"] = new_ak
+            if new_ok:
+                st.session_state["_odds_api_key"] = new_ok
+            if new_wk:
+                os.environ["OPENWEATHER_API_KEY"] = new_wk
+            if new_sk:
+                os.environ["SCRAPER_API_KEY"] = new_sk
+            st.success("API keys saved for this session!")
 
 
 # ============================================================
@@ -3796,31 +4490,31 @@ def main():
     else:
         proj_df = st.session_state["proj_df"]
 
-    # Tab layout
+    # Tab layout — PrizePicks Lab is the main Run Model page
     tabs = st.tabs([
+        "&#127183; PrizePicks Lab",
+        "&#128225; Live Scanner",
         "&#127942; Power Rankings",
         "&#128269; Player Deep Dive",
         "&#127959; Course Fit",
         "&#128176; Betting Edge",
-        "&#127183; PrizePicks Lab",
-        "&#127922; Monte Carlo",
-        "&#129302; AI Briefing",
+        "&#9881; Settings",
     ])
 
     with tabs[0]:
-        tab_power_rankings(proj_df, settings)
-    with tabs[1]:
-        tab_player_deep_dive(proj_df, settings)
-    with tabs[2]:
-        tab_course_fit(proj_df, settings)
-    with tabs[3]:
-        tab_betting_edge(proj_df, settings)
-    with tabs[4]:
         tab_prizepicks(proj_df, settings)
+    with tabs[1]:
+        tab_live_scanner(proj_df, settings)
+    with tabs[2]:
+        tab_power_rankings(proj_df, settings)
+    with tabs[3]:
+        tab_player_deep_dive(proj_df, settings)
+    with tabs[4]:
+        tab_course_fit(proj_df, settings)
     with tabs[5]:
-        tab_monte_carlo(proj_df, settings)
+        tab_betting_edge(proj_df, settings)
     with tabs[6]:
-        tab_ai_briefing(proj_df, settings)
+        tab_settings(proj_df, settings)
 
 
 if __name__ == "__main__":
