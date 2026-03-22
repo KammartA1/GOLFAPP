@@ -72,7 +72,8 @@ class H2HAnalyzer:
 
     # SG edge to win probability conversion for H2H
     # Derived from: historical matchup data shows each +0.1 SG ≈ +3-4% win probability in 72hr H2H
-    SG_TO_H2H_WIN_SLOPE = 0.32   # per 1 SG stroke difference
+    # [v6.0] Increased sensitivity from 0.32 → 0.38 for sharper H2H edge detection
+    SG_TO_H2H_WIN_SLOPE = 0.38   # per 1 SG stroke difference
 
     def __init__(self):
         pass

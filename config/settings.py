@@ -50,28 +50,29 @@ SG_WEIGHTS = {
     "sg_putt": 0.22,   # Putting — highest variance, regress hard
 }
 
-# Recency decay weights for form model
+# [v6.0] Steeper recency decay — recent form is strongest predictor
 FORM_WINDOWS = {
-    "last_4":  0.45,
-    "last_12": 0.35,
-    "last_24": 0.20,
+    "last_4":  0.55,
+    "last_12": 0.30,
+    "last_24": 0.15,
 }
 
-# SG putting regression factor (pulled toward mean due to high variance)
-PUTTING_REGRESSION_FACTOR = 0.55
+# [v6.0] SG putting regression — slightly less aggressive to capture hot putters
+PUTTING_REGRESSION_FACTOR = 0.45
 
 # Approach SG regression factor (most stable — regress less)
-APPROACH_REGRESSION_FACTOR = 0.20
+APPROACH_REGRESSION_FACTOR = 0.15
 
 # ─────────────────────────────────────────────
 # KELLY SIZING PARAMETERS
 # ─────────────────────────────────────────────
-KELLY_FRACTION       = 0.25     # 1/4 Kelly — conservative for golf variance
-MAX_BET_PCT_BANKROLL = 0.05     # Never more than 5% on any single bet
-MIN_EDGE_THRESHOLD   = 0.04     # Minimum 4% edge to place a bet
-MAX_GPP_EXPOSURE     = 0.03     # Max 3% bankroll per DFS slate
-MAX_H2H_EXPOSURE     = 0.05     # Max 5% on H2H matchups
-MAX_OUTRIGHT_EXPOSURE= 0.01     # Max 1% on outright futures
+# [v6.0] Aggressive Kelly for 200%+ ROI: higher fraction + higher edge threshold
+KELLY_FRACTION       = 0.40     # 2/5 Kelly — aggressive for high-edge plays only
+MAX_BET_PCT_BANKROLL = 0.08     # Up to 8% on elite single bets
+MIN_EDGE_THRESHOLD   = 0.06     # Minimum 6% edge to place any bet (was 4%)
+MAX_GPP_EXPOSURE     = 0.05     # Max 5% bankroll per DFS slate (was 3%)
+MAX_H2H_EXPOSURE     = 0.08     # Max 8% on H2H matchups (was 5%)
+MAX_OUTRIGHT_EXPOSURE= 0.02     # Max 2% on outright futures (was 1%)
 
 # ─────────────────────────────────────────────
 # DFS SETTINGS
@@ -117,5 +118,6 @@ USER_AGENT       = (
 # ─────────────────────────────────────────────
 LOG_LEVEL        = "INFO"
 TRACK_ALL_BETS   = True
-MIN_AUDIT_SAMPLE = 30          # Min bets before edge decay analysis
-ROI_ALERT_THRESHOLD = -0.10    # Alert if rolling ROI drops below -10%
+# [v6.0] Tighter audit controls
+MIN_AUDIT_SAMPLE = 20          # Min bets before edge decay analysis (was 30)
+ROI_ALERT_THRESHOLD = -0.05    # Alert if rolling ROI drops below -5% (was -10%)
