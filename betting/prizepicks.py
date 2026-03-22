@@ -125,19 +125,19 @@ class PrizePicksAnalyzer:
     Converts SG projections → stat-specific projections → edge vs PP line.
     """
 
-    # Stat-specific standard deviations (per round, approximate)
-    # Used for probability estimation
+    # [v6.0] Tightened standard deviations for sharper probability estimates
+    # Reduced by ~15% to increase confidence separation between edge/no-edge
     STAT_STD = {
-        "fantasy_score":      12.0,   # DK points — high variance
-        "birdies_or_better":   1.8,   # birdies per round — moderate
-        "birdies":             1.8,
-        "bogey_free_rounds":   0.48,  # binary-ish — % of rounds bogey free
-        "strokes_total":       3.5,   # total strokes 72 holes
-        "holes_under_par":     4.5,   # holes under par in tournament
-        "gir":                 3.0,   # greens in regulation (count)
-        "fairways_hit":        4.0,   # fairways hit
-        "eagles":              0.20,  # very rare
-        "longest_drive":      15.0,   # yards — high variance
+        "fantasy_score":      10.0,   # DK points — tightened from 12.0
+        "birdies_or_better":   1.5,   # birdies per round — tightened from 1.8
+        "birdies":             1.5,
+        "bogey_free_rounds":   0.42,  # binary-ish — tightened from 0.48
+        "strokes_total":       3.0,   # total strokes 72 holes — tightened from 3.5
+        "holes_under_par":     3.8,   # holes under par — tightened from 4.5
+        "gir":                 2.5,   # greens in regulation — tightened from 3.0
+        "fairways_hit":        3.4,   # fairways hit — tightened from 4.0
+        "eagles":              0.18,  # very rare
+        "longest_drive":      13.0,   # yards — tightened from 15.0
         "holes_in_one":        0.02,  # extremely rare
     }
 
@@ -215,11 +215,12 @@ class PrizePicksAnalyzer:
         return round(1 - self.prob_over(proj, line, std), 4)
 
     def classify_confidence(self, prob: float) -> str:
-        if prob >= 0.625:
+        """[v6.0] Raised thresholds for elite-only selection targeting 200%+ ROI."""
+        if prob >= 0.68:
             return "HIGH"
-        elif prob >= 0.575:
+        elif prob >= 0.62:
             return "MEDIUM"
-        elif prob >= 0.540:
+        elif prob >= 0.57:
             return "LOW"
         return "PASS"
 
@@ -425,16 +426,24 @@ class PrizePicksAnalyzer:
             if len(set(players)) < len(players):
                 continue
 
-            # Combined probability (independent assumption)
+            # [v6.0] Correlation-adjusted combined probability
+            # Golf stats for same-tournament players are mildly correlated (weather, course)
+            # Apply conservative correlation penalty: 3% per additional leg
             probs = [e.pick_prob for e in combo]
             combined_prob = float(np.prod(probs))
+            # Correlation dampening: same-tournament picks are NOT independent
+            _corr_penalty = 0.97 ** max(0, len(probs) - 1)
+            combined_prob *= _corr_penalty
 
             if combined_prob < min_combined_prob:
                 continue
 
             ev = combined_prob * payout - 1.0
+            # [v6.0] Only build slips with positive EV after correlation adjustment
+            if ev < 0.05:
+                continue
 
-            # Overall confidence
+            # Overall confidence — [v6.0] stricter: require ALL HIGH for HIGH slip
             confs = [e.confidence for e in combo]
             if all(c == "HIGH" for c in confs):
                 overall_conf = "HIGH"
