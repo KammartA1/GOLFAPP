@@ -124,7 +124,8 @@ def sg_to_win_prob(proj_sg_total: float, field_sg_values: list[float]) -> float:
     win_p = 1 - stats.norm.cdf(0, loc=z, scale=1) if z > 0 else 0.005
     # Normalize — exactly 1 winner per field
     n_players = len(field_sg_values)
-    win_prob = min(win_p / n_players * 1.5, 0.40)
+    # [v6.0] Removed 40% cap — elite players in weak fields can genuinely exceed 40%
+    win_prob = min(win_p / n_players * 1.5, 0.55)
     return round(max(0.001, win_prob), 4)
 
 
