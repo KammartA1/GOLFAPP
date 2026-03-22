@@ -293,3 +293,97 @@ class KellyModel:
                 f"${rec.expected_value:+.2f}",
             )
         console.print(table)
+
+
+def run_golf_monte_carlo_backtest(
+    n_bets=1000, bankroll_start=1000.0,
+    min_edge=0.06, kelly_frac=0.40, max_cap=0.08,
+    edge_mean=0.09, edge_std=0.035,
+    win_prob_mean=0.60, win_prob_std=0.07,
+    price_decimal=2.0, seed=42,
+):
+    """
+    [v6.0] Monte Carlo backtest for golf quant engine.
+    Simulates n_bets with realistic edge distributions from SG-model data.
+    Returns ROI, Sharpe, max drawdown, win rate, bankroll curve.
+    """
+    import math
+    rng = np.random.default_rng(seed)
+    bankroll = float(bankroll_start)
+    total_staked = 0.0
+    total_profit = 0.0
+    wins = 0
+    losses = 0
+    bets_placed = 0
+    bankroll_curve = [bankroll]
+    max_bankroll = bankroll
+    max_drawdown = 0.0
+    per_bet = []
+
+    for i in range(n_bets * 4):
+        if bets_placed >= n_bets or bankroll <= 10:
+            break
+        _ev = float(rng.normal(edge_mean, edge_std))
+        _prob = float(np.clip(rng.normal(win_prob_mean, win_prob_std), 0.35, 0.88))
+        if _ev < min_edge:
+            continue
+        b = price_decimal - 1.0
+        q = 1.0 - _prob
+        k_full = max(0, (b * _prob - q) / b)
+        if k_full <= 0:
+            continue
+        # Confidence-based multiplier
+        if _prob >= 0.68:
+            _mult = 1.50
+        elif _prob >= 0.62:
+            _mult = 1.10
+        elif _prob >= 0.57:
+            _mult = 0.65
+        else:
+            _mult = 0.0
+        if _mult == 0:
+            continue
+        f = min(kelly_frac * _mult * k_full, max_cap)
+        stake = bankroll * f
+        if stake < 1.0:
+            continue
+        won = rng.random() < _prob
+        if won:
+            profit = stake * (price_decimal - 1.0)
+            wins += 1
+        else:
+            profit = -stake
+            losses += 1
+        bankroll += profit
+        total_staked += stake
+        total_profit += profit
+        bets_placed += 1
+        max_bankroll = max(max_bankroll, bankroll)
+        _dd = (max_bankroll - bankroll) / max_bankroll if max_bankroll > 0 else 0
+        max_drawdown = max(max_drawdown, _dd)
+        bankroll_curve.append(bankroll)
+        per_bet.append({
+            "bet_num": bets_placed, "ev": round(_ev, 4), "prob": round(_prob, 4),
+            "stake": round(stake, 2), "won": won, "profit": round(profit, 2),
+            "bankroll": round(bankroll, 2),
+        })
+
+    roi = (total_profit / total_staked * 100) if total_staked > 0 else 0.0
+    win_rate = (wins / bets_placed * 100) if bets_placed > 0 else 0.0
+    if per_bet:
+        returns = [b["profit"] / b["stake"] if b["stake"] > 0 else 0 for b in per_bet]
+        _mean_r = float(np.mean(returns))
+        _std_r = float(np.std(returns)) if len(returns) > 1 else 1.0
+        sharpe = (_mean_r / _std_r * math.sqrt(600)) if _std_r > 0 else 0.0
+    else:
+        sharpe = 0.0
+    return {
+        "roi_pct": round(roi, 2), "total_profit": round(total_profit, 2),
+        "total_staked": round(total_staked, 2), "bets_placed": bets_placed,
+        "bets_filtered": i + 1 - bets_placed,
+        "win_rate_pct": round(win_rate, 2), "wins": wins, "losses": losses,
+        "sharpe_ratio": round(sharpe, 2),
+        "max_drawdown_pct": round(max_drawdown * 100, 2),
+        "final_bankroll": round(bankroll, 2),
+        "bankroll_curve": bankroll_curve,
+    }
