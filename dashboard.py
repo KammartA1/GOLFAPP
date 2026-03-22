@@ -24,6 +24,12 @@ import hashlib
 import traceback
 import requests
 
+try:
+    from curl_cffi import requests as cffi_requests
+    HAS_CURL_CFFI = True
+except ImportError:
+    HAS_CURL_CFFI = False
+
 warnings.filterwarnings("ignore")
 
 # ── Page config (must be first Streamlit call) ─────────────────────────────
@@ -632,6 +638,7 @@ TOUR_BASELINES = {
     "dd_avg":            295.0,
     "fantasy_score":     45.0,
     "bogey_free_pct":    22.0,
+    "pars_per_round":    10.5,
 }
 
 # ── PrizePicks payout structures ────────────────────────────
@@ -1577,9 +1584,9 @@ def fetch_espn_pga_field() -> dict:
     Uses the current in-progress or most recent completed event with a field.
     """
     try:
+        # First try without date filter to get current/in-progress events
         resp = requests.get(
             "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard",
-            params={"dates": "2026", "limit": "50"},
             timeout=15,
         )
         if not resp.ok:
@@ -1591,7 +1598,7 @@ def fetch_espn_pga_field() -> dict:
     if not events:
         return {}
 
-    # Find best event: In Progress > most recent Final with field > Scheduled
+    # Find best event: In Progress > Scheduled with field > most recent Final
     best = None
     for e in events:
         status = e.get("status", {}).get("type", {}).get("description", "")
@@ -1599,6 +1606,8 @@ def fetch_espn_pga_field() -> dict:
         if status == "In Progress":
             best = e
             break
+        if status == "Scheduled" and n > 0 and best is None:
+            best = e
         if status == "Final" and n > 0:
             best = e  # keeps updating to the most recent
 
@@ -1620,7 +1629,16 @@ def fetch_espn_pga_field() -> dict:
                 "position": comp.get("status", {}).get("position", {}).get("displayName", ""),
             })
 
-    return {"event_name": event_name, "status": status, "players": players}
+    # Extract course name from venue or event details
+    venue = best.get("competitions", [{}])[0].get("venue", {})
+    course_name = venue.get("fullName", "") or venue.get("shortName", "")
+
+    return {
+        "event_name": event_name,
+        "status": status,
+        "players": players,
+        "course_name": course_name,
+    }
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -1688,34 +1706,42 @@ def _get_scraper_api_key() -> str:
 def fetch_prizepicks_golf_lines(scraper_key: str = "") -> list:
     """Fetch PrizePicks golf prop lines.
 
-    Uses ScraperAPI to bypass PerimeterX protection on the PP API.
-    Falls back to direct request if ScraperAPI unavailable.
+    Uses curl_cffi with edge101 impersonation to bypass PerimeterX.
+    Falls back to ScraperAPI proxy, then direct request.
 
-    Returns list of dicts: player, stat_type, line, odds_type.
+    Returns list of dicts: player, stat_type, line, odds_type, league, description.
     """
     PP_API = "https://api.prizepicks.com/projections"
     PP_HEADERS = {
         "Accept": "application/vnd.api+json",
         "Referer": "https://app.prizepicks.com/",
         "Origin": "https://app.prizepicks.com",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     }
-    params = {"per_page": "500", "single_stat": "true", "in_play": "false"}
+    params = {"per_page": "500"}
 
     data = None
 
-    # Method 1: ScraperAPI proxy
-    if scraper_key:
+    # Method 1: curl_cffi with edge101 impersonation (bypasses PerimeterX)
+    if HAS_CURL_CFFI and data is None:
+        for browser in ["edge101", "safari17_0", "chrome124"]:
+            try:
+                resp = cffi_requests.get(
+                    PP_API, params=params, headers=PP_HEADERS,
+                    impersonate=browser, timeout=25,
+                )
+                if resp.ok:
+                    data = resp.json()
+                    break
+            except Exception:
+                continue
+
+    # Method 2: ScraperAPI proxy
+    if data is None and scraper_key:
         try:
-            full_url = f"{PP_API}?per_page=500&single_stat=true&in_play=false"
+            full_url = f"{PP_API}?per_page=500"
             resp = requests.get(
                 "https://api.scraperapi.com",
-                params={
-                    "api_key": scraper_key,
-                    "url": full_url,
-                    "render": "false",
-                },
+                params={"api_key": scraper_key, "url": full_url, "render": "false"},
                 timeout=30,
             )
             if resp.ok:
@@ -1723,10 +1749,14 @@ def fetch_prizepicks_golf_lines(scraper_key: str = "") -> list:
         except Exception:
             pass
 
-    # Method 2: Direct request (works from residential IPs)
+    # Method 3: Direct request (works from residential IPs)
     if data is None:
         try:
-            resp = requests.get(PP_API, params=params, headers=PP_HEADERS, timeout=20)
+            resp = requests.get(PP_API, params=params, headers={
+                **PP_HEADERS,
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            }, timeout=20)
             if resp.ok:
                 data = resp.json()
         except Exception:
@@ -1735,33 +1765,45 @@ def fetch_prizepicks_golf_lines(scraper_key: str = "") -> list:
     if not data:
         return []
 
-    # Parse the JSONAPI response
-    GOLF_LEAGUES = {"PGA", "PGA TOUR", "GOLF", "PGA 1R", "PGA ROUND 1",
-                    "PGA ROUND 2", "PGA ROUND 3", "PGA ROUND 4", "LPGA",
-                    "PGA TOURNAMENT", "LIV GOLF"}
+    # Build lookup maps from included resources
+    GOLF_LEAGUE_NAMES = {"PGA", "PGA TOUR", "GOLF", "LPGA", "LIV GOLF", "LIVGOLF", "DP WORLD TOUR"}
 
-    included = {}
+    player_map = {}
+    league_map = {}
     for item in data.get("included", []):
-        if isinstance(item, dict) and "id" in item:
-            included[item["id"]] = item
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type", "")
+        item_id = item.get("id")
+        attrs = item.get("attributes", {}) or {}
+        if item_type == "new_player" and item_id:
+            player_map[item_id] = attrs.get("name", "")
+        elif item_type == "league" and item_id:
+            league_map[item_id] = attrs.get("name", "")
 
     rows = []
     for proj in data.get("data", []):
         if not isinstance(proj, dict):
             continue
         attrs = proj.get("attributes", {}) or {}
-        league = str(attrs.get("league", "") or "").upper()
-        if league and league not in GOLF_LEAGUES:
+        rels = proj.get("relationships", {}) or {}
+
+        # Determine league via relationship (primary) or attribute (fallback)
+        league_id = (rels.get("league", {}).get("data", {}) or {}).get("id")
+        league_name = league_map.get(league_id, "")
+        if not league_name:
+            league_name = str(attrs.get("league", "") or "")
+
+        if league_name.upper() not in GOLF_LEAGUE_NAMES:
             continue
 
-        rels = proj.get("relationships", {}) or {}
+        # Get player name from relationship -> included map
         player_id = (rels.get("new_player", {}).get("data", {}) or {}).get("id")
         if not player_id:
             player_id = (rels.get("player", {}).get("data", {}) or {}).get("id")
-        player_attrs = included.get(player_id, {}).get("attributes", {}) if player_id else {}
-        player_name = (
-            player_attrs.get("name", "") or attrs.get("name", "") or attrs.get("display_name", "")
-        )
+        player_name = player_map.get(player_id, "")
+        if not player_name:
+            player_name = attrs.get("description", "").split(" - ")[0].strip() if " - " in attrs.get("description", "") else attrs.get("description", "")
 
         stat_type = attrs.get("stat_type", "")
         line_score = attrs.get("line_score")
@@ -1775,7 +1817,8 @@ def fetch_prizepicks_golf_lines(scraper_key: str = "") -> list:
                     "line": float(line_score),
                     "odds_type": odds_type,
                     "start_time": attrs.get("start_time", ""),
-                    "league": league,
+                    "league": league_name.upper(),
+                    "description": attrs.get("description", ""),
                 })
             except (TypeError, ValueError):
                 pass
@@ -1921,7 +1964,7 @@ Focus on: course fit, current form trajectory, key statistical edges or weakness
 
     try:
         message = client.messages.create(
-            model="claude-haiku-4-5-20241022",
+            model="claude-haiku-4-5-20241022",  # Fast model for single-player analysis
             max_tokens=300,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -1930,23 +1973,75 @@ Focus on: course fit, current form trajectory, key statistical edges or weakness
         return f"[AI analysis error: {str(e)[:100]}]"
 
 
+def _generate_algorithmic_briefing(edges_data: dict) -> str:
+    """Generate a data-driven slate briefing without AI when API is unavailable."""
+    course = edges_data.get("course", "Unknown")
+    field_size = edges_data.get("field_size", 0)
+    edges = edges_data.get("edges", [])
+
+    if not edges:
+        return "No edge data available for briefing."
+
+    # Sort by edge descending
+    top_3 = sorted(edges, key=lambda x: x.get("edge", 0), reverse=True)[:3]
+    avoid = [e for e in edges if e.get("edge", 0) < -0.02 or e.get("course_delta", 0) < -0.3][:2]
+    best_course_fit = sorted(edges, key=lambda x: x.get("course_delta", 0), reverse=True)[:2]
+
+    lines = []
+    lines.append(f"SLATE BRIEFING — {course} ({field_size} players)")
+    lines.append("")
+    lines.append("TOP VALUE PLAYS:")
+    for i, p in enumerate(top_3, 1):
+        edge_pct = p.get("edge", 0) * 100
+        sg = p.get("sg_regressed", 0)
+        odds = p.get("odds", 0)
+        kelly = p.get("kelly", 0) * 100
+        wp = p.get("win_prob", 0) * 100
+        lines.append(
+            f"  {i}. {p['player']} — SG {sg:+.2f}, Edge {edge_pct:+.1f}%, "
+            f"Win Prob {wp:.1f}%, Odds +{odds}, Kelly {kelly:.1f}%"
+        )
+
+    lines.append("")
+    lines.append("COURSE FIT LEADERS:")
+    for p in best_course_fit:
+        cd = p.get("course_delta", 0)
+        lines.append(f"  {p['player']} — Course Δ {cd:+.2f} SG (strong course history fit)")
+
+    if avoid:
+        lines.append("")
+        lines.append("PLAYERS TO FADE:")
+        for p in avoid:
+            edge_pct = p.get("edge", 0) * 100
+            cd = p.get("course_delta", 0)
+            lines.append(f"  {p['player']} — Edge {edge_pct:+.1f}%, Course Δ {cd:+.2f}")
+
+    lines.append("")
+    lines.append("STRATEGY:")
+    if top_3 and top_3[0].get("edge", 0) > 0.08:
+        lines.append(f"  • Strong edge slate. Focus outrights on {top_3[0]['player']}.")
+    lines.append("  • Top 10/20 bets offer better hit rates for bankroll building.")
+    lines.append("  • PrizePicks: Target players with high SG approach at this course.")
+    lines.append(f"  • Kelly sizing suggests allocating to top {min(5, len([e for e in edges if e.get('kelly', 0) > 0.005]))} edges.")
+
+    return "\n".join(lines)
+
+
 def ai_slate_briefing(edges_json: str) -> str:
     """Use Claude Sonnet for comprehensive slate briefing.
 
-    Args:
-        edges_json: JSON string of all player edges and projections for the slate.
-
-    Returns:
-        AI-generated slate briefing text, or fallback message.
+    Falls back to algorithmic briefing if API unavailable.
     """
+    edges_data = json.loads(edges_json)
+
     client = _anthropic_client()
     if client is None:
-        return "[AI slate briefing unavailable — no API key configured]"
+        return _generate_algorithmic_briefing(edges_data)
 
     prompt = f"""You are an elite golf betting analyst. Provide a comprehensive slate briefing (8-12 sentences) covering:
 
-1. Top 3 value plays with specific reasoning
-2. Key course-fit angles for this week
+1. Top 3 value plays with specific reasoning (reference SG numbers)
+2. Key course-fit angles for this week's course
 3. Players to avoid (poor course fit or negative form trends)
 4. Recommended betting strategy (outright, top 10/20, matchups, PrizePicks)
 
@@ -1957,13 +2052,14 @@ Be specific, data-driven, and actionable. Reference SG numbers and probabilities
 
     try:
         message = client.messages.create(
-            model="claude-sonnet-4-5-20241022",
+            model="claude-sonnet-4-5-20241022",  # Sonnet for slate briefings
             max_tokens=800,
             messages=[{"role": "user", "content": prompt}],
         )
         return message.content[0].text
     except Exception as e:
-        return f"[AI slate briefing error: {str(e)[:100]}]"
+        # Fallback to algorithmic briefing on any API error
+        return _generate_algorithmic_briefing(edges_data)
 
 
 # ============================================================
@@ -1979,6 +2075,7 @@ STAT_STD = {
     "gir":            2.5,    # greens in regulation count (out of 18)
     "fairways":       2.2,    # fairways hit count (out of 14)
     "putts":          2.0,
+    "pars":           1.8,    # pars per round (out of 18)
 }
 
 # Sensitivity mapping: how each SG category influences each PP stat
@@ -2004,6 +2101,9 @@ SG_TO_STAT_SENSITIVITY = {
     },
     "putts": {
         "sg_ott": 0.0, "sg_app": 0.0, "sg_arg": -0.2, "sg_putt": -1.5,
+    },
+    "pars": {
+        "sg_ott": 0.3, "sg_app": 0.5, "sg_arg": 0.4, "sg_putt": 0.3,
     },
 }
 
@@ -2031,6 +2131,7 @@ def project_pp_stat(stat_type: str, player_proj: dict) -> tuple:
         "gir": "gir_pct",
         "fairways": "fairways_pct",
         "putts": "putts_per_round",
+        "pars": "pars_per_round",
     }
     baseline_key = baseline_map.get(stat_type, stat_type)
     baseline_val = TOUR_BASELINES.get(baseline_key, 0.0)
@@ -2346,9 +2447,8 @@ def _get_current_week_tournaments() -> list:
         # March
         ((3, 1, 5), [("Cognizant Classic", "PGA National", "PGA")]),
         ((3, 6, 12), [("Arnold Palmer Invitational", "Bay Hill", "PGA")]),
-        ((3, 13, 19), [("THE PLAYERS Championship", "TPC Sawgrass", "PGA"),
-                        ("Valspar Championship", "Innisbrook Copperhead", "PGA")]),
-        ((3, 20, 26), [("WGC-Dell Match Play", "Austin CC", "PGA")]),
+        ((3, 13, 19), [("THE PLAYERS Championship", "TPC Sawgrass", "PGA")]),
+        ((3, 20, 26), [("Valspar Championship", "Innisbrook Copperhead", "PGA")]),
         ((3, 27, 31), [("Valero Texas Open", "TPC San Antonio", "PGA")]),
         # April
         ((4, 1, 6), [("Valero Texas Open", "TPC San Antonio", "PGA")]),
@@ -2409,6 +2509,77 @@ def _get_current_week_tournaments() -> list:
     return result
 
 
+# ── ESPN event name -> course key mapping ─────────────────
+TOURNAMENT_TO_COURSE = {
+    "Valspar Championship": "Innisbrook Copperhead",
+    "THE PLAYERS Championship": "TPC Sawgrass",
+    "The Players Championship": "TPC Sawgrass",
+    "Arnold Palmer Invitational": "Bay Hill",
+    "The Masters": "Augusta National",
+    "Masters Tournament": "Augusta National",
+    "RBC Heritage": "Harbour Town",
+    "PGA Championship": "Quail Hollow",
+    "U.S. Open": "Oakmont CC",
+    "The Open Championship": "St Andrews",
+    "Farmers Insurance Open": "Torrey Pines South",
+    "WM Phoenix Open": "TPC Scottsdale",
+    "Genesis Invitational": "Riviera CC",
+    "The Sentry": "Kapalua Plantation",
+    "Sony Open": "Waialae CC",
+    "AT&T Pebble Beach Pro-Am": "Pebble Beach",
+    "WGC-Dell Match Play": "Austin CC",
+    "Valero Texas Open": "TPC San Antonio",
+    "Wells Fargo Championship": "Quail Hollow",
+    "Charles Schwab Challenge": "Colonial CC",
+    "the Memorial Tournament": "Muirfield Village",
+    "Memorial Tournament": "Muirfield Village",
+    "Travelers Championship": "TPC River Highlands",
+    "Wyndham Championship": "Sedgefield CC",
+    "FedEx St. Jude Championship": "TPC Southwind",
+    "BMW Championship": "Castle Pines",
+    "TOUR Championship": "East Lake",
+    "Cognizant Classic": "PGA National",
+}
+
+
+def _resolve_espn_to_course(event_name: str, venue_name: str = "") -> str | None:
+    """Map an ESPN event name or venue to our COURSE_PROFILES key."""
+    # Direct tournament name lookup
+    if event_name in TOURNAMENT_TO_COURSE:
+        return TOURNAMENT_TO_COURSE[event_name]
+
+    # Fuzzy match on tournament name
+    event_lower = event_name.lower()
+    for tname, ckey in TOURNAMENT_TO_COURSE.items():
+        if tname.lower() in event_lower or event_lower in tname.lower():
+            return ckey
+
+    # Try venue name against course profiles
+    if venue_name:
+        venue_lower = venue_name.lower()
+        for ckey in COURSE_PROFILES:
+            if ckey.lower() in venue_lower or venue_lower in ckey.lower():
+                return ckey
+        # Check common aliases
+        alias_map = {
+            "copperhead": "Innisbrook Copperhead",
+            "innisbrook": "Innisbrook Copperhead",
+            "sawgrass": "TPC Sawgrass",
+            "augusta": "Augusta National",
+            "harbour town": "Harbour Town",
+            "harbor town": "Harbour Town",
+            "bay hill": "Bay Hill",
+            "riviera": "Riviera CC",
+            "pebble beach": "Pebble Beach",
+            "torrey pines": "Torrey Pines South",
+        }
+        for alias, ckey in alias_map.items():
+            if alias in venue_lower:
+                return ckey
+
+    return None
+
+
 # ============================================================
 # SIDEBAR
 # ============================================================
@@ -2419,34 +2590,69 @@ def render_sidebar() -> dict:
         st.markdown("---")
 
         # ── Current Week Tournaments ─────────────────────────
-        this_week = _get_current_week_tournaments()
-        if this_week:
-            st.markdown("**This Week's Tournaments**")
-            # Build quick-select options from this week's events
-            week_options = []
-            for t in this_week:
-                label = f"{t['tournament']} — {t['course']}"
-                if t["tour"] == "Major":
-                    label += " ⭐"
-                week_options.append((label, t["course"]))
+        # Try ESPN live detection first for accurate tournament info
+        espn_tournament = None
+        espn_course = None
+        if "espn_data" not in st.session_state:
+            try:
+                espn_data = fetch_espn_pga_field()
+                if espn_data and espn_data.get("event_name"):
+                    st.session_state["espn_data"] = espn_data
+            except Exception:
+                pass
 
-            selected_label = st.radio(
-                "Quick Select",
-                options=[label for label, _ in week_options],
-                index=0,
-                label_visibility="collapsed",
-            )
-            # Determine the course from selection
-            quick_course = None
-            for label, crs in week_options:
-                if label == selected_label:
-                    quick_course = crs
-                    break
+        espn_data = st.session_state.get("espn_data")
+        if espn_data and espn_data.get("event_name"):
+            espn_tournament = espn_data["event_name"]
+            # Map ESPN event name to our course key
+            espn_course = _resolve_espn_to_course(espn_tournament, espn_data.get("course_name", ""))
+            status_label = espn_data.get("status", "")
+            n_players = len(espn_data.get("players", []))
+            status_color = "#4ade80" if status_label == "In Progress" else "#fbbf24" if status_label == "Scheduled" else "#94a3b8"
+            st.markdown(f"""
+            <div class="glass-card" style="padding:12px;margin-bottom:8px;">
+                <div style="font-size:0.75rem;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;">Live Tournament</div>
+                <div style="font-size:0.95rem;font-weight:600;color:#e2e8f0;margin-top:4px;">{espn_tournament}</div>
+                <div style="display:flex;gap:10px;margin-top:6px;">
+                    <span style="font-size:0.72rem;color:{status_color};">{status_label}</span>
+                    <span style="font-size:0.72rem;color:#94a3b8;">{n_players} players</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        this_week = _get_current_week_tournaments()
+        if espn_course or this_week:
+            # Determine the best default course
+            if espn_course and espn_course in COURSE_PROFILES:
+                quick_course = espn_course
+            elif this_week:
+                quick_course = this_week[0]["course"]
+            else:
+                quick_course = None
+
+            if this_week and not espn_course:
+                st.markdown("**This Week's Tournaments**")
+                week_options = []
+                for t in this_week:
+                    label = f"{t['tournament']} — {t['course']}"
+                    if t["tour"] == "Major":
+                        label += " ⭐"
+                    week_options.append((label, t["course"]))
+
+                selected_label = st.radio(
+                    "Quick Select",
+                    options=[label for label, _ in week_options],
+                    index=0,
+                    label_visibility="collapsed",
+                )
+                for label, crs in week_options:
+                    if label == selected_label:
+                        quick_course = crs
+                        break
 
             st.markdown("---")
-            # Show full course list with the quick-selected course as default
             all_courses = sorted(COURSE_PROFILES.keys())
-            default_idx = all_courses.index(quick_course) if quick_course in all_courses else 0
+            default_idx = all_courses.index(quick_course) if quick_course and quick_course in all_courses else 0
             course = st.selectbox(
                 "All Courses (override)",
                 options=all_courses,
@@ -2458,7 +2664,6 @@ def render_sidebar() -> dict:
                 'No PGA events scheduled this week</div>',
                 unsafe_allow_html=True,
             )
-            # Full course selector
             course = st.selectbox(
                 "Tournament Course",
                 options=sorted(COURSE_PROFILES.keys()),
@@ -3025,14 +3230,18 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
         # Map PP stat types to our internal types
         pp_to_internal = {
             "Fantasy Score": "fantasy_score", "Birdies": "birdies",
+            "Birdies Or Better": "birdies", "Birdies or Better": "birdies",
             "Bogey-Free Holes": "bogey_free", "Total Strokes": "strokes",
-            "Greens in Regulation": "gir", "Fairways Hit": "fairways",
-            "Putts": "putts",
+            "Strokes": "strokes",
+            "Greens in Regulation": "gir", "Greens In Regulation": "gir",
+            "Fairways Hit": "fairways",
+            "Putts": "putts", "Pars": "pars",
+            "Birdies or Better Matchup": "birdies",
         }
         stat_display = st.selectbox("Stat Type", stat_options, index=0)
         stat_type = pp_to_internal.get(stat_display, stat_display)
         if stat_type not in STAT_STD:
-            stat_type = "fantasy_score"
+            stat_type = "birdies"  # reasonable fallback for golf
     with col3:
         # Try to auto-fill line from live data
         default_line = 25.0
@@ -3146,40 +3355,176 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
         </div>
         """, unsafe_allow_html=True)
 
-    # Flex play builder
+    # ── Multi-Golfer Parlay Builder ─────────────────────────────
     st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
-    st.markdown("**Flex Play Builder**")
-    st.markdown("<div style='font-size:0.8rem;color:#94a3b8;margin-bottom:8px;'>Add 2-6 picks to calculate combo EV</div>", unsafe_allow_html=True)
+    st.markdown("**Parlay Builder — Select Multiple Golfers**")
+    st.markdown(
+        '<div style="font-size:0.8rem;color:#94a3b8;margin-bottom:12px;">'
+        'Build 2-6 leg parlays using model-projected probabilities. '
+        'Select players, stat types, and sides — the model calculates combo hit rate and EV.'
+        '</div>', unsafe_allow_html=True,
+    )
 
-    n_picks = st.slider("Number of Picks", 2, 6, 3, key="flex_picks")
-    pick_probs = []
-    pick_cols = st.columns(n_picks)
-    for i in range(n_picks):
-        with pick_cols[i]:
-            prob_input = st.number_input(f"Pick {i+1} Win%", 40.0, 95.0, 58.0, 1.0, key=f"flex_p{i}")
-            pick_probs.append(prob_input / 100.0)
+    n_legs = st.slider("Number of Legs", 2, 6, 3, key="parlay_legs")
 
-    if st.button("Calculate Flex EV", key="calc_flex"):
-        pp_result = pp_combo_ev(pick_probs, "power_play")
-        flex_result = pp_combo_ev(pick_probs, "flex_play")
+    # PrizePicks payout multipliers
+    PP_PAYOUTS = {2: 3.0, 3: 5.0, 4: 10.0, 5: 20.0, 6: 40.0}
+    PP_FLEX_PAYOUTS = {
+        3: {2: 1.5, 3: 2.25},
+        4: {2: 1.0, 3: 1.5, 4: 5.0},
+        5: {2: 0.5, 3: 1.0, 4: 2.0, 5: 10.0},
+        6: {2: 0.25, 3: 0.5, 4: 2.0, 5: 4.0, 6: 25.0},
+    }
 
-        rcol1, rcol2 = st.columns(2)
+    # Stat type mapping for display
+    pp_internal_map = {
+        "Birdies Or Better": "birdies", "Birdies or Better": "birdies",
+        "Strokes": "strokes", "Total Strokes": "strokes",
+        "Greens In Regulation": "gir", "Greens in Regulation": "gir",
+        "Fairways Hit": "fairways", "Pars": "pars",
+        "Putts": "putts", "Fantasy Score": "fantasy_score",
+        "Bogey-Free Holes": "bogey_free",
+    }
+
+    all_player_list = proj_df["player"].tolist()
+    # If PP lines available, prefer those players
+    if pp_lines:
+        pp_player_list = sorted(set(l["player"] for l in pp_lines if l.get("league", "").upper() in ("PGA", "LIVGOLF")))
+        if pp_player_list:
+            all_player_list = pp_player_list
+
+    parlay_picks = []
+    for i in range(n_legs):
+        st.markdown(f"<div style='font-size:0.75rem;color:#60a5fa;margin-top:8px;'>Leg {i+1}</div>", unsafe_allow_html=True)
+        lcol1, lcol2, lcol3, lcol4 = st.columns([3, 2, 2, 1])
+        with lcol1:
+            leg_player = st.selectbox("Player", all_player_list, key=f"parlay_player_{i}",
+                                       label_visibility="collapsed")
+        with lcol2:
+            # Get available stats for this player from PP lines
+            player_stats = ["Strokes", "Birdies Or Better", "Greens In Regulation", "Fairways Hit", "Pars"]
+            if pp_lines:
+                ps = [l["stat_type"] for l in pp_lines if l["player"] == leg_player]
+                if ps:
+                    player_stats = list(dict.fromkeys(ps))  # unique, preserving order
+            leg_stat = st.selectbox("Stat", player_stats, key=f"parlay_stat_{i}",
+                                     label_visibility="collapsed")
+        with lcol3:
+            # Auto-fill line from PP data
+            default_line = 70.5
+            if pp_lines:
+                match = [l for l in pp_lines if l["player"] == leg_player and l["stat_type"] == leg_stat]
+                if match:
+                    default_line = match[0]["line"]
+            leg_line = st.number_input("Line", value=default_line, step=0.5, key=f"parlay_line_{i}",
+                                        label_visibility="collapsed")
+        with lcol4:
+            leg_side = st.selectbox("Side", ["OVER", "UNDER"], key=f"parlay_side_{i}",
+                                     label_visibility="collapsed")
+
+        # Calculate probability using model
+        internal_stat = pp_internal_map.get(leg_stat, "strokes")
+        player_match = proj_df[proj_df["player"] == leg_player]
+        if not player_match.empty:
+            p_row = player_match.iloc[0]
+            sg_proj = {k: p_row[k] for k in ["sg_ott", "sg_app", "sg_arg", "sg_putt"]}
+            pv, ps = project_pp_stat(internal_stat, sg_proj)
+            leg_prob = prob_over(pv, leg_line, ps) if leg_side == "OVER" else prob_under(pv, leg_line, ps)
+        else:
+            pv, ps, leg_prob = 0.0, 1.0, 0.50
+
+        parlay_picks.append({
+            "player": leg_player,
+            "stat": leg_stat,
+            "line": leg_line,
+            "side": leg_side,
+            "prob": leg_prob,
+            "proj": pv,
+        })
+
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+
+    if st.button("Calculate Parlay EV", key="calc_parlay", type="primary"):
+        # Show individual leg breakdown
+        st.markdown("**Leg Breakdown**")
+        leg_data = []
+        for pk in parlay_picks:
+            edge = pk["prob"] - (1.0 / 1.82)
+            leg_data.append({
+                "Player": pk["player"],
+                "Stat": pk["stat"],
+                "Line": pk["line"],
+                "Side": pk["side"],
+                "Projection": f"{pk['proj']:.1f}",
+                "Hit Rate": f"{pk['prob']*100:.1f}%",
+                "Edge": f"{edge*100:+.1f}%",
+            })
+        st.dataframe(pd.DataFrame(leg_data), use_container_width=True, hide_index=True)
+
+        # Combo probability = product of individual probs
+        combo_prob = 1.0
+        for pk in parlay_picks:
+            combo_prob *= pk["prob"]
+
+        power_payout = PP_PAYOUTS.get(n_legs, 2.0 ** n_legs)
+        power_ev = combo_prob * power_payout - 1.0
+
+        rcol1, rcol2, rcol3 = st.columns(3)
         with rcol1:
             st.markdown(f"""
             <div class="glass-card" style="padding:14px;">
-                <div style="font-size:0.85rem;font-weight:600;color:#4ade80;margin-bottom:8px;">Power Play ({n_picks} picks)</div>
-                <div style="font-size:0.75rem;color:#94a3b8;">Win Prob: <span class="mono text-green">{pp_result['combo_prob']*100:.1f}%</span></div>
-                <div style="font-size:0.75rem;color:#94a3b8;">Payout: <span class="mono text-blue">{pp_result['payout_multiplier']:.1f}x</span></div>
-                <div style="font-size:0.75rem;color:#94a3b8;">EV: {edge_badge(pp_result['edge'])}</div>
+                <div style="font-size:0.85rem;font-weight:600;color:#4ade80;margin-bottom:8px;">Power Play ({n_legs} legs)</div>
+                <div style="font-size:0.75rem;color:#94a3b8;">Hit Rate: <span class="mono text-green">{combo_prob*100:.2f}%</span></div>
+                <div style="font-size:0.75rem;color:#94a3b8;">Payout: <span class="mono text-blue">{power_payout:.0f}x</span></div>
+                <div style="font-size:0.75rem;color:#94a3b8;">EV: {edge_badge(power_ev)}</div>
+                <div style="font-size:0.65rem;color:#64748b;margin-top:6px;">All {n_legs} legs must hit</div>
             </div>
             """, unsafe_allow_html=True)
+
         with rcol2:
+            # Flex play: calculate EV across all possible outcomes
+            flex_payouts = PP_FLEX_PAYOUTS.get(n_legs, {})
+            if flex_payouts:
+                from itertools import combinations
+                probs = [pk["prob"] for pk in parlay_picks]
+                total_flex_ev = 0.0
+                for n_correct in flex_payouts:
+                    payout = flex_payouts[n_correct]
+                    # Sum probability of all combos with exactly n_correct hits
+                    p_exactly = 0.0
+                    for combo in combinations(range(n_legs), n_correct):
+                        p_combo = 1.0
+                        for j in range(n_legs):
+                            p_combo *= probs[j] if j in combo else (1 - probs[j])
+                        p_exactly += p_combo
+                    total_flex_ev += p_exactly * payout
+                flex_ev = total_flex_ev - 1.0
+                st.markdown(f"""
+                <div class="glass-card" style="padding:14px;">
+                    <div style="font-size:0.85rem;font-weight:600;color:#60a5fa;margin-bottom:8px;">Flex Play ({n_legs} legs)</div>
+                    <div style="font-size:0.75rem;color:#94a3b8;">Expected Return: <span class="mono text-blue">{total_flex_ev:.2f}x</span></div>
+                    <div style="font-size:0.75rem;color:#94a3b8;">EV: {edge_badge(flex_ev)}</div>
+                    <div style="font-size:0.65rem;color:#64748b;margin-top:6px;">Partial hits pay out</div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.info("Flex play requires 3-6 legs.")
+
+        with rcol3:
+            # Recommendation
+            best_play = "Power Play" if power_ev > 0.05 else "Flex Play" if flex_payouts and flex_ev > 0.02 else "No Play"
+            rec_color = "#4ade80" if best_play != "No Play" else "#f87171"
+            min_prob = min(pk["prob"] for pk in parlay_picks)
+            weakest = min(parlay_picks, key=lambda x: x["prob"])
             st.markdown(f"""
             <div class="glass-card" style="padding:14px;">
-                <div style="font-size:0.85rem;font-weight:600;color:#60a5fa;margin-bottom:8px;">Flex Play ({n_picks} picks)</div>
-                <div style="font-size:0.75rem;color:#94a3b8;">Best EV: <span class="mono text-green">{flex_result['edge']*100:+.1f}%</span></div>
-                <div style="font-size:0.75rem;color:#94a3b8;">Total Return: <span class="mono text-blue">{flex_result.get('total_return', 0):.2f}x</span></div>
-                <div style="font-size:0.75rem;color:#94a3b8;">Play Type: <span class="mono">{flex_result.get('play_type', 'Flex')}</span></div>
+                <div style="font-size:0.85rem;font-weight:600;color:{rec_color};margin-bottom:8px;">Recommendation</div>
+                <div style="font-size:1.1rem;font-weight:700;color:{rec_color};margin-bottom:8px;">{best_play}</div>
+                <div style="font-size:0.75rem;color:#94a3b8;">Weakest Leg: <span class="mono">{weakest['player']}</span></div>
+                <div style="font-size:0.75rem;color:#94a3b8;">({weakest['prob']*100:.1f}% hit rate)</div>
+                <div style="font-size:0.65rem;color:#64748b;margin-top:6px;">
+                    {'All legs show edge — strong parlay' if all(pk['prob'] > 0.55 for pk in parlay_picks) else 'Some legs below breakeven — consider swapping'}
+                </div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -3279,18 +3624,37 @@ def tab_ai_briefing(proj_df: pd.DataFrame, settings: dict):
     """Render the AI Slate Briefing tab."""
     st.markdown(section_header("AI Slate Briefing", "&#129302;", "Claude-Powered"), unsafe_allow_html=True)
 
+    # Prepare edges data (used by both top-5 display and briefing)
+    edges_list = []
+    for _, r in proj_df.nlargest(15, "edge").iterrows():
+        edges_list.append({
+            "player": r["player"],
+            "sg_regressed": round(r["sg_regressed"], 2),
+            "win_prob": round(r["win_prob"], 4),
+            "implied_prob": round(r["implied_prob"], 4),
+            "edge": round(r["edge"], 4),
+            "odds": int(r["odds"]),
+            "course_delta": round(r["course_delta"], 2),
+            "kelly": round(r["kelly"], 3),
+        })
+    edges_json = json.dumps({
+        "course": settings["course"],
+        "field_size": len(proj_df),
+        "edges": edges_list,
+    })
+
     st.markdown("""
     <div class="glass-card" style="padding:14px;margin-bottom:16px;">
         <div style="font-size:0.85rem;color:#e2e8f0;">
-            Generate a comprehensive AI-powered slate briefing using Claude Sonnet.
-            The briefing analyzes all player edges, course fits, and betting opportunities.
+            AI-powered slate briefing analyzing player edges, course fits, and betting strategy.
+            Uses Claude AI when available, otherwise generates data-driven algorithmic analysis.
         </div>
     </div>
     """, unsafe_allow_html=True)
 
     # Top edges summary
     top_edges = proj_df.nlargest(5, "edge")
-    st.markdown("**Top 5 Edges (Input to AI)**")
+    st.markdown("**Top 5 Edges**")
     for _, r in top_edges.iterrows():
         st.markdown(f"""
         <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05);">
@@ -3305,43 +3669,24 @@ def tab_ai_briefing(proj_df: pd.DataFrame, settings: dict):
 
     st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
 
-    if st.button("Generate AI Briefing", key="ai_briefing"):
-        with st.spinner("Claude Sonnet is generating your slate briefing..."):
-            # Prepare edges JSON
-            edges_list = []
-            for _, r in proj_df.nlargest(15, "edge").iterrows():
-                edges_list.append({
-                    "player": r["player"],
-                    "sg_regressed": round(r["sg_regressed"], 2),
-                    "win_prob": round(r["win_prob"], 4),
-                    "implied_prob": round(r["implied_prob"], 4),
-                    "edge": round(r["edge"], 4),
-                    "odds": int(r["odds"]),
-                    "course_delta": round(r["course_delta"], 2),
-                    "kelly": round(r["kelly"], 3),
-                })
-            edges_json = json.dumps({
-                "course": settings["course"],
-                "field_size": len(proj_df),
-                "edges": edges_list,
-            })
-
+    if st.button("Generate Briefing", key="ai_briefing", type="primary"):
+        with st.spinner("Generating slate briefing..."):
             try:
                 briefing = ai_slate_briefing(edges_json)
                 st.markdown(f"""
                 <div class="glass-card" style="padding:20px;">
                     <div style="font-size:0.75rem;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">
-                        &#129302; Claude AI Slate Briefing — {settings['course']}
+                        Slate Briefing — {settings['course']}
                     </div>
                     <div style="font-size:0.85rem;color:#e2e8f0;line-height:1.7;white-space:pre-wrap;">{briefing}</div>
                 </div>
                 """, unsafe_allow_html=True)
             except Exception as e:
-                st.warning(f"AI briefing unavailable: {e}")
+                st.warning(f"Briefing error: {e}")
     else:
         st.markdown("""
         <div style="text-align:center;padding:40px;color:#64748b;">
-            Click "Generate AI Briefing" to get Claude's analysis of the current slate.
+            Click "Generate Briefing" for AI-powered or algorithmic analysis of the current slate.
         </div>
         """, unsafe_allow_html=True)
 
