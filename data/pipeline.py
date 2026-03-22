@@ -12,6 +12,7 @@ from data.scrapers.pga_tour import PGATourScraper, ESPNGolfScraper
 from data.scrapers.weather import WeatherModel
 from data.scrapers.dfs_salaries import DFSSalaryScraper
 from data.scrapers.datagolf import DataGolfClient
+from data.scrapers.shotlink import ShotLinkScraper
 from data.storage.database import get_session, Player, Tournament, SGStats, TournamentResult
 from config.settings import DATA_DIR
 
@@ -25,12 +26,13 @@ class DataPipeline:
     """
 
     def __init__(self):
-        self.pga     = PGATourScraper()
-        self.espn    = ESPNGolfScraper()
-        self.weather = WeatherModel()
-        self.dfs_sal = DFSSalaryScraper()
-        self.dg      = DataGolfClient()
-        self.session = get_session()
+        self.pga      = PGATourScraper()
+        self.espn     = ESPNGolfScraper()
+        self.weather  = WeatherModel()
+        self.dfs_sal  = DFSSalaryScraper()
+        self.dg       = DataGolfClient()
+        self.shotlink = ShotLinkScraper()
+        self.session  = get_session()
 
     # ─────────────────────────────────────────────
     # FULL REFRESH
@@ -77,11 +79,16 @@ class DataPipeline:
         log.info(f"  Field: {len(field)} players")
 
         # 3. SG history per player in the field
-        log.info("Step 3/4: Pulling SG history for field...")
-        sg_history = self._build_sg_history(
-            player_names=[p["name"] for p in field],
-            seasons=[datetime.now().year, datetime.now().year - 1, datetime.now().year - 2]
-        )
+        # v8.0: Use ShotLink scraper for event-level SG history (real data)
+        log.info("Step 3/4: Pulling SG history via ShotLink scraper...")
+        player_names = [p["name"] for p in field]
+        seasons = [datetime.now().year, datetime.now().year - 1, datetime.now().year - 2]
+        try:
+            sg_history = self.shotlink.build_player_event_history(player_names, seasons)
+            log.info(f"  ShotLink: event-level SG for {sum(1 for v in sg_history.values() if v)} players")
+        except Exception as e:
+            log.warning(f"ShotLink scraper failed, falling back to season-level: {e}")
+            sg_history = self._build_sg_history(player_names=player_names, seasons=seasons)
         results["sg_history"] = sg_history
 
         # 4. DataGolf supplement

@@ -1,12 +1,24 @@
 """
-Golf Quant Engine — Probability Calculator
+Golf Quant Engine — Probability Calculator — v8.0
 Calculates over/under probabilities and edges for PrizePicks lines.
+
+v8.0: Integrates hole-level probability distributions for birdies,
+bogey-free holes, and strokes props (DataGolf methodology).
+Falls back to baseline+sensitivity for stat types without hole-level model.
 """
 import math
 import logging
 from scipy import stats
 
 log = logging.getLogger(__name__)
+
+# Try to import hole-level model
+try:
+    from models.hole_level import prop_probability as hole_level_prop
+    HOLE_LEVEL_AVAILABLE = True
+except ImportError:
+    HOLE_LEVEL_AVAILABLE = False
+    log.warning("Hole-level model not available — using baseline+sensitivity")
 
 # PrizePicks Fantasy Score rubric (DraftKings-style for PGA)
 PP_FANTASY_SCORING = {
@@ -100,6 +112,9 @@ def project_stat(stat_type: str, player_sg: dict,
     """
     Project a specific stat value for a player based on their SG profile.
 
+    v8.0: Uses hole-level probability model for birdies, bogey_free_holes,
+    and strokes props. Falls back to baseline+sensitivity for other types.
+
     Args:
         stat_type: e.g. "fantasy_score", "birdies"
         player_sg: dict with keys like sg_total, sg_app, sg_putt, sg_ott, sg_atg
@@ -107,6 +122,39 @@ def project_stat(stat_type: str, player_sg: dict,
 
     Returns: (projection, std_dev, weather_adj_projection, weather_adj_std)
     """
+    # v8.0: Use hole-level model for supported prop types
+    hole_level_types = {"birdies", "birdies_or_better", "bogey_free_holes",
+                        "strokes_total", "fantasy_score"}
+
+    if HOLE_LEVEL_AVAILABLE and stat_type in hole_level_types:
+        sg_total = float(player_sg.get("sg_total", player_sg.get("proj_sg_total", 0)) or 0)
+        player_variance = float(player_sg.get("player_variance", 2.75))
+
+        # Use hole-level simulation for projection
+        try:
+            result = hole_level_prop(
+                prop_type=stat_type,
+                line_value=0,  # We just want the projection, not probability vs a line
+                sg_total=sg_total,
+                player_variance=player_variance,
+                n_simulations=5000,  # Reduced for speed in bulk analysis
+            )
+            projection = result["projection"]
+            std = result["std"]
+
+            # Weather adjustments
+            w_proj = projection
+            w_std = std
+            if weather_adj:
+                w_proj *= weather_adj.get("projection_mult", 1.0)
+                w_std *= weather_adj.get("variance_mult", 1.0)
+
+            return round(projection, 2), round(std, 2), round(w_proj, 2), round(w_std, 2)
+        except Exception as e:
+            log.warning(f"Hole-level model failed for {stat_type}: {e}")
+            # Fall through to baseline+sensitivity
+
+    # Baseline + sensitivity approach (original method, for non-hole-level types)
     baseline_info = STAT_BASELINES.get(stat_type)
     if not baseline_info:
         log.warning(f"Unknown stat type: {stat_type}")
