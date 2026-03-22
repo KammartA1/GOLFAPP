@@ -881,7 +881,7 @@ COURSE_PROFILES = {
         "elevation": 600, "par": 72,
         "notes": "Scorable Texas layout, wide fairways, birdie-fest, putting premium",
     },
-    "Oakmont CC": {
+    "Oakmont CC (US Open)": {
         "sg_weights": {"sg_ott": 0.20, "sg_app": 0.32, "sg_arg": 0.18, "sg_putt": 0.30},
         "distance_bonus": 0.06, "accuracy_penalty": -0.06,
         "bermuda_greens": False, "wind_sensitivity": 0.30,
@@ -1921,7 +1921,7 @@ Focus on: course fit, current form trajectory, key statistical edges or weakness
 
     try:
         message = client.messages.create(
-            model="claude-haiku-4-5",
+            model="claude-haiku-4-5-20241022",
             max_tokens=300,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -1931,7 +1931,7 @@ Focus on: course fit, current form trajectory, key statistical edges or weakness
 
 
 def ai_slate_briefing(edges_json: str) -> str:
-    """Use Claude claude-sonnet-4-6 for comprehensive slate briefing.
+    """Use Claude Sonnet for comprehensive slate briefing.
 
     Args:
         edges_json: JSON string of all player edges and projections for the slate.
@@ -1957,7 +1957,7 @@ Be specific, data-driven, and actionable. Reference SG numbers and probabilities
 
     try:
         message = client.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-sonnet-4-5-20241022",
             max_tokens=800,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -2656,7 +2656,7 @@ def tab_power_rankings(proj_df: pd.DataFrame, settings: dict):
         .format({"SG (adj)": "{:.2f}", "SG (fit)": "{:.2f}", "Course Δ": "{:+.2f}",
                  "Win%": "{:.1f}%", "Top 5%": "{:.1f}%", "Top 10%": "{:.1f}%",
                  "Cut%": "{:.1f}%", "Edge": "{:+.1f}%", "Kelly": "{:.2f}",
-                 "Odds": "+{:.0f}"})
+                 "Odds": "{:+.0f}"})
         .background_gradient(subset=["SG (adj)"], cmap="Greens", vmin=-1, vmax=3)
         .background_gradient(subset=["Edge"], cmap="RdYlGn", vmin=-10, vmax=10),
         use_container_width=True,
@@ -2950,7 +2950,7 @@ def tab_betting_edge(proj_df: pd.DataFrame, settings: dict):
         bet_display.style
         .format({"Model Prob": "{:.1%}", "Market Implied": "{:.1%}",
                  "Edge": "{:+.1%}", "Kelly": "{:.3f}",
-                 "Wager ($)": "${:,.0f}", "Odds": "+{:.0f}"})
+                 "Wager ($)": "${:,.0f}", "Odds": "{:+.0f}"})
         .background_gradient(subset=["Edge"], cmap="Greens", vmin=0, vmax=0.15),
         use_container_width=True,
         height=400,
@@ -3037,12 +3037,16 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
         # Try to auto-fill line from live data
         default_line = 25.0
         if pp_lines:
-            matching = [l for l in pp_lines if l["player"] == pp_player and l["stat_type"] == stat_display]
+            matching = [l for l in pp_lines if l["player"] == pp_player and (l["stat_type"] == stat_display or l["stat_type"].lower().replace(" ", "_") == stat_type)]
             if matching:
                 default_line = matching[0]["line"]
         line = st.number_input("PrizePicks Line", min_value=0.0, value=default_line, step=0.5)
 
-    p = proj_df[proj_df["player"] == pp_player].iloc[0]
+    _pp_match = proj_df[proj_df["player"] == pp_player]
+    if _pp_match.empty:
+        st.warning(f"Player '{pp_player}' not found in projection model. Select a player from the field.")
+        return
+    p = _pp_match.iloc[0]
     sg_proj = {k: p[k] for k in ["sg_ott", "sg_app", "sg_arg", "sg_putt"]}
 
     proj_val, proj_std = project_pp_stat(stat_type, sg_proj)
@@ -3115,9 +3119,10 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
 
     with col2:
         st.markdown("**Edge Summary**")
-        fair_over = 0.50
-        edge_over = p_over - fair_over
-        edge_under = p_under - fair_over
+        # PrizePicks breakeven: pays 0.82x profit, so BE = 1/1.82 = 54.95%
+        pp_breakeven = 1.0 / 1.82  # 0.5495
+        edge_over = p_over - pp_breakeven
+        edge_under = p_under - pp_breakeven
         st.markdown(f"""
         <div class="glass-card" style="padding:14px;">
             <div style="margin-bottom:12px;">
@@ -3130,8 +3135,8 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
             </div>
             <div style="margin-bottom:12px;">
                 <span style="font-size:0.75rem;color:#94a3b8;">Recommendation</span><br/>
-                <span style="font-size:0.9rem;font-weight:600;color:{'#4ade80' if p_over > 0.57 else '#f87171' if p_under > 0.57 else '#94a3b8'};">
-                    {'OVER ✓' if p_over > 0.57 else 'UNDER ✓' if p_under > 0.57 else 'PASS — No Edge'}
+                <span style="font-size:0.9rem;font-weight:600;color:{'#4ade80' if p_over > 0.60 else '#f87171' if p_under > 0.60 else '#94a3b8'};">
+                    {'OVER ✓' if p_over > 0.60 else 'UNDER ✓' if p_under > 0.60 else 'PASS — No Edge (need >60%)'}
                 </span>
             </div>
             <div>
