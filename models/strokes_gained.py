@@ -301,8 +301,9 @@ class SGModel:
             recent = sg.tail(6).values
             x = np.arange(len(recent))
             slope, _, r_value, p_value, _ = stats.linregress(x, recent)
-            improving = slope > 0.03 and p_value < 0.3
-            declining = slope < -0.03 and p_value < 0.3
+            # [v6.0] Tightened p-value from 0.3 → 0.10 for statistical significance
+            improving = slope > 0.03 and p_value < 0.10
+            declining = slope < -0.03 and p_value < 0.10
         else:
             improving = last4 > last12 + 0.2
             declining = last4 < last12 - 0.2
