@@ -4902,6 +4902,341 @@ def tab_settings(proj_df: pd.DataFrame, settings: dict):
 
 
 # ============================================================
+# TAB — EDGE ANALYSIS (Decomposition, Attribution, Sources)
+# ============================================================
+def tab_edge_analysis(proj_df: pd.DataFrame, settings: dict):
+    """Edge Analysis — decomposition, attribution, edge sources."""
+    st.markdown(section_header("Edge Analysis", "&#128300;", "Decomposition & Attribution"), unsafe_allow_html=True)
+
+    analysis_tabs = st.tabs(["Edge Decomposition", "Attribution", "Edge Sources", "Adversarial Tests"])
+
+    with analysis_tabs[0]:
+        try:
+            from edge_analysis.decomposer import GolfEdgeDecomposer
+            from database.connection import get_session
+            decomposer = GolfEdgeDecomposer()
+            report = decomposer.generate_report()
+            st.markdown(f"""
+            <div class="glass-card" style="padding:18px;">
+                <div style="font-size:1rem;font-weight:700;color:#e2e8f0;margin-bottom:12px;">Edge Decomposition Report</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:0.8rem;color:#94a3b8;white-space:pre-wrap;">{report.get('summary', 'Run more bets to generate decomposition.')}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            if report.get("components"):
+                import plotly.graph_objects as go_fig
+                labels = list(report["components"].keys())
+                values = list(report["components"].values())
+                fig = go_fig.Figure(data=[go_fig.Pie(labels=labels, values=values, hole=0.4)])
+                fig.update_layout(template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=350)
+                st.plotly_chart(fig, use_container_width=True)
+        except Exception as e:
+            st.info(f"Edge decomposition requires bet history. ({e})")
+
+    with analysis_tabs[1]:
+        try:
+            from edge_analysis.attribution import EdgeAttributionEngine
+            engine = EdgeAttributionEngine([])
+            st.markdown("""
+            <div class="glass-card" style="padding:18px;">
+                <div style="font-size:1rem;font-weight:700;color:#e2e8f0;margin-bottom:12px;">Edge Attribution</div>
+                <div style="font-size:0.85rem;color:#94a3b8;">
+                    Attribution decomposes profit into: Prediction Edge, CLV/Timing Edge, Market Inefficiency, and Variance.<br>
+                    Log more bets with full line data to generate attribution analysis.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("Run Attribution Analysis", key="run_attribution"):
+                with st.spinner("Running Monte Carlo attribution..."):
+                    result = engine.decompose()
+                    st.json(result)
+        except Exception as e:
+            st.info(f"Attribution requires bet history. ({e})")
+
+    with analysis_tabs[2]:
+        try:
+            from edge_analysis.source_registry import SourceRegistry
+            registry = SourceRegistry()
+            sources = registry.get_all_sources()
+            st.markdown(f"""
+            <div class="glass-card" style="padding:18px;">
+                <div style="font-size:1rem;font-weight:700;color:#e2e8f0;margin-bottom:12px;">Edge Sources ({len(sources)} registered)</div>
+            </div>
+            """, unsafe_allow_html=True)
+            for src in sources:
+                mechanism = src.get_mechanism() if hasattr(src, 'get_mechanism') else "N/A"
+                decay = src.get_decay_risk() if hasattr(src, 'get_decay_risk') else "N/A"
+                name = src.__class__.__name__
+                st.markdown(f"""
+                <div class="glass-card" style="padding:12px;margin-bottom:8px;">
+                    <div style="font-weight:600;color:#60a5fa;">{name}</div>
+                    <div style="font-size:0.8rem;color:#94a3b8;">Mechanism: {mechanism}</div>
+                    <div style="font-size:0.8rem;color:#94a3b8;">Decay Risk: {decay}</div>
+                </div>
+                """, unsafe_allow_html=True)
+        except Exception as e:
+            st.info(f"Edge sources: {e}")
+
+    with analysis_tabs[3]:
+        try:
+            from tests.adversarial.runner import AdversarialRunner
+            st.markdown("""
+            <div class="glass-card" style="padding:18px;">
+                <div style="font-size:1rem;font-weight:700;color:#e2e8f0;margin-bottom:12px;">Adversarial Destruction Tests</div>
+                <div style="font-size:0.85rem;color:#94a3b8;">
+                    Tests: Probability Perturbation, Best Bet Removal, Noise Injection, Assumption Distortion, Time Period Robustness
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button("Run Adversarial Suite", key="run_adversarial"):
+                with st.spinner("Running adversarial tests (this may take a while)..."):
+                    runner = AdversarialRunner()
+                    report = runner.run_all()
+                    st.json(report)
+        except Exception as e:
+            st.info(f"Adversarial tests: {e}")
+
+
+# ============================================================
+# TAB — SIMULATOR (Tournament Monte Carlo)
+# ============================================================
+def tab_simulator(proj_df: pd.DataFrame, settings: dict):
+    """Tournament simulator — hole-by-hole Monte Carlo."""
+    st.markdown(section_header("Tournament Simulator", "&#127919;", "Hole-by-Hole Monte Carlo"), unsafe_allow_html=True)
+
+    try:
+        from simulation.tournament_engine import TournamentEngine
+        from simulation.config import SimulationConfig
+
+        n_sims = st.slider("Simulations", 100, 10000, 1000, 100, key="sim_n")
+        config = SimulationConfig(n_simulations=n_sims)
+
+        if proj_df is not None and not proj_df.empty:
+            st.markdown(f"**Field size:** {len(proj_df)} players | **Course:** {settings.get('course', 'Default')}")
+
+            if st.button("Run Tournament Simulation", key="run_sim"):
+                with st.spinner(f"Simulating {n_sims} tournaments..."):
+                    engine = TournamentEngine(config=config)
+                    players = proj_df.head(30).to_dict('records') if len(proj_df) > 30 else proj_df.to_dict('records')
+                    results = engine.simulate(players, settings.get('course', 'Default'))
+
+                    if results:
+                        st.success("Simulation complete!")
+                        result_rows = []
+                        for name, data in sorted(results.items(), key=lambda x: x[1].get('win_prob', 0), reverse=True)[:20]:
+                            result_rows.append({
+                                "Player": name,
+                                "Win %": f"{data.get('win_prob', 0)*100:.1f}%",
+                                "Top 5 %": f"{data.get('top5_prob', 0)*100:.1f}%",
+                                "Top 10 %": f"{data.get('top10_prob', 0)*100:.1f}%",
+                                "Top 20 %": f"{data.get('top20_prob', 0)*100:.1f}%",
+                                "Make Cut %": f"{data.get('make_cut_prob', 0)*100:.1f}%",
+                                "Avg Score": f"{data.get('avg_total', 0):.1f}",
+                            })
+                        if result_rows:
+                            st.dataframe(pd.DataFrame(result_rows), use_container_width=True)
+        else:
+            st.warning("Load player data first (PrizePicks Lab or Live Scanner).")
+    except Exception as e:
+        st.info(f"Simulator: {e}")
+
+
+# ============================================================
+# TAB — CAPITAL (Kelly, Risk, Portfolio)
+# ============================================================
+def tab_capital(proj_df: pd.DataFrame, settings: dict):
+    """Capital efficiency — Kelly sizing, risk metrics, portfolio optimization."""
+    st.markdown(section_header("Capital Efficiency", "&#128176;", "Kelly Sizing & Risk Management"), unsafe_allow_html=True)
+
+    capital_tabs = st.tabs(["Kelly Calculator", "Risk Metrics", "Portfolio"])
+
+    with capital_tabs[0]:
+        try:
+            from services.capital.kelly import KellyCriterion as KellyCalculator
+            calc = KellyCalculator()
+            st.markdown("**Kelly Criterion Calculator**")
+            col1, col2 = st.columns(2)
+            with col1:
+                win_prob = st.number_input("Win Probability (%)", 1.0, 99.0, 55.0, 0.5, key="kelly_prob") / 100
+                odds = st.number_input("Decimal Odds", 1.01, 20.0, 2.0, 0.05, key="kelly_odds")
+            with col2:
+                fraction = st.slider("Kelly Fraction", 0.1, 1.0, 0.25, 0.05, key="kelly_frac")
+                uncertainty = st.slider("Prob Uncertainty (SE)", 0.0, 0.20, 0.05, 0.01, key="kelly_unc")
+
+            full = calc.full_kelly(win_prob, odds)
+            frac = calc.fractional_kelly(win_prob, odds, fraction)
+            adj_result = calc.uncertainty_adjusted_kelly(win_prob, odds, uncertainty, fraction)
+            adj = adj_result[0] if isinstance(adj_result, tuple) else adj_result
+
+            bankroll = settings.get("bankroll", 1000)
+            st.markdown(f"""
+            <div class="glass-card" style="padding:14px;">
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
+                    <div><span style="font-size:0.7rem;color:#64748b;">Full Kelly</span><br><span style="font-size:1.2rem;font-weight:700;color:#4ade80;">{full*100:.1f}%</span><br><span style="font-size:0.8rem;color:#94a3b8;">${bankroll*full:.0f}</span></div>
+                    <div><span style="font-size:0.7rem;color:#64748b;">Fractional ({fraction:.0%})</span><br><span style="font-size:1.2rem;font-weight:700;color:#60a5fa;">{frac*100:.1f}%</span><br><span style="font-size:0.8rem;color:#94a3b8;">${bankroll*frac:.0f}</span></div>
+                    <div><span style="font-size:0.7rem;color:#64748b;">Uncertainty-Adj</span><br><span style="font-size:1.2rem;font-weight:700;color:#fbbf24;">{adj*100:.1f}%</span><br><span style="font-size:0.8rem;color:#94a3b8;">${bankroll*adj:.0f}</span></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        except Exception as e:
+            st.info(f"Kelly calculator: {e}")
+
+    with capital_tabs[1]:
+        try:
+            from services.capital.risk_adjusted import RiskMetrics
+            metrics = RiskMetrics()
+            st.markdown("""
+            <div class="glass-card" style="padding:18px;">
+                <div style="font-size:1rem;font-weight:700;color:#e2e8f0;">Risk Metrics</div>
+                <div style="font-size:0.85rem;color:#94a3b8;margin-top:8px;">
+                    Sharpe Ratio, Sortino Ratio, Max Drawdown, Calmar Ratio, VaR (95%), CVaR (95%)<br>
+                    Requires bet history with P&L data.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        except Exception as e:
+            st.info(f"Risk metrics: {e}")
+
+    with capital_tabs[2]:
+        try:
+            from services.capital.portfolio import BetPortfolio
+            st.markdown("""
+            <div class="glass-card" style="padding:18px;">
+                <div style="font-size:1rem;font-weight:700;color:#e2e8f0;">Portfolio Optimization</div>
+                <div style="font-size:0.85rem;color:#94a3b8;margin-top:8px;">
+                    Correlation-adjusted allocation, concentration checks, max exposure limits.<br>
+                    Submit multiple bet signals to optimize allocation.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        except Exception as e:
+            st.info(f"Portfolio: {e}")
+
+
+# ============================================================
+# TAB — KILL SWITCH
+# ============================================================
+def tab_kill_switch(proj_df: pd.DataFrame, settings: dict):
+    """Kill switch status — hard stops that cannot be overridden."""
+    st.markdown(section_header("Kill Switch", "&#128680;", "Hard Safety Stops"), unsafe_allow_html=True)
+
+    try:
+        from services.kill_switch import KillSwitch
+        ks = KillSwitch()
+        try:
+            status = ks.check_all()
+            active = status.get("system_active", True)
+        except Exception:
+            status = {}
+            active = True
+
+        if active:
+            st.markdown("""
+            <div class="glass-card" style="padding:18px;border-left:4px solid #4ade80;">
+                <div style="font-size:1.3rem;font-weight:700;color:#4ade80;">ALL CLEAR</div>
+                <div style="font-size:0.85rem;color:#94a3b8;">All kill switches are inactive. System is operational.</div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            reason = ks.get_halt_reason()
+            st.markdown(f"""
+            <div class="glass-card" style="padding:18px;border-left:4px solid #ef4444;background:rgba(239,68,68,0.1);">
+                <div style="font-size:1.3rem;font-weight:700;color:#ef4444;">SYSTEM HALTED</div>
+                <div style="font-size:0.85rem;color:#fca5a5;">{reason}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("**Kill Switch Conditions:**")
+        conditions = status.get("conditions", [])
+        for cond in conditions:
+            triggered = cond.get("triggered", False)
+            color = "#ef4444" if triggered else "#4ade80"
+            icon = "&#10007;" if triggered else "&#10003;"
+            st.markdown(f"""
+            <div class="glass-card" style="padding:10px;margin-bottom:6px;border-left:3px solid {color};">
+                <span style="color:{color};">{icon}</span>
+                <span style="font-weight:600;color:#e2e8f0;">{cond.get('name', 'Unknown')}</span>
+                <span style="font-size:0.8rem;color:#94a3b8;margin-left:8px;">{cond.get('message', '')}</span>
+            </div>
+            """, unsafe_allow_html=True)
+        if not conditions:
+            st.info("No kill conditions evaluated yet. Run some bets to populate the database.")
+    except Exception as e:
+        st.info(f"Kill switch: {e}")
+
+
+# ============================================================
+# TAB — EDGE MONITOR (Daily Verdict)
+# ============================================================
+def tab_edge_monitor(proj_df: pd.DataFrame, settings: dict):
+    """Real-time edge monitoring — daily EDGE = YES/NO."""
+    st.markdown(section_header("Edge Monitor", "&#128200;", "Daily Edge Status"), unsafe_allow_html=True)
+
+    try:
+        from services.edge_monitor.alert_system import EdgeAlertSystem
+        from services.edge_monitor.daily_metrics import DailyMetrics
+
+        alert = EdgeAlertSystem()
+        try:
+            verdict = alert.daily_verdict()
+        except Exception:
+            verdict = "EDGE STATUS: INSUFFICIENT DATA — Need more bets to determine edge."
+
+        verdict_str = str(verdict) if not isinstance(verdict, str) else verdict
+        edge_yes = "YES" in verdict_str.upper()
+        color = "#4ade80" if edge_yes else "#ef4444"
+
+        st.markdown(f"""
+        <div class="glass-card" style="padding:24px;text-align:center;border:2px solid {color};">
+            <div style="font-size:0.8rem;color:#64748b;letter-spacing:0.15em;text-transform:uppercase;">Edge Status</div>
+            <div style="font-size:2.5rem;font-weight:900;color:{color};font-family:'JetBrains Mono',monospace;margin:8px 0;">
+                {'EDGE = YES' if edge_yes else 'EDGE = NO'}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown(f"""
+        <div class="glass-card" style="padding:14px;margin-top:12px;">
+            <div style="font-family:'JetBrains Mono',monospace;font-size:0.8rem;color:#94a3b8;white-space:pre-wrap;">{verdict_str}</div>
+        </div>
+        """, unsafe_allow_html=True)
+    except Exception as e:
+        st.info(f"Edge monitor requires bet history. ({e})")
+
+
+# ============================================================
+# TAB — FINAL VERDICT
+# ============================================================
+def tab_verdict(proj_df: pd.DataFrame, settings: dict):
+    """Final verdict — honest self-assessment of the entire system."""
+    st.markdown(section_header("Final Verdict", "&#9878;", "Honest System Self-Assessment"), unsafe_allow_html=True)
+
+    try:
+        from services.verdict.final_report import FinalVerdict
+
+        st.markdown("""
+        <div class="glass-card" style="padding:18px;">
+            <div style="font-size:1rem;font-weight:700;color:#e2e8f0;">System Verdict Generator</div>
+            <div style="font-size:0.85rem;color:#94a3b8;margin-top:8px;">
+                Pulls from ALL subsystems: edge decomposition, attribution, CLV, data quality, execution reality,
+                market reaction, model governance, adversarial testing, and capital efficiency.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("Generate Full Verdict Report", key="gen_verdict"):
+            with st.spinner("Running full system analysis..."):
+                verdict = FinalVerdict()
+                report = verdict.generate()
+                st.markdown(f"""
+                <div class="glass-card" style="padding:18px;">
+                    <div style="font-family:'JetBrains Mono',monospace;font-size:0.8rem;color:#e2e8f0;white-space:pre-wrap;">{report}</div>
+                </div>
+                """, unsafe_allow_html=True)
+    except Exception as e:
+        st.info(f"Verdict: {e}")
+
+
+# ============================================================
 # MAIN APPLICATION
 # ============================================================
 def main():
@@ -5015,6 +5350,12 @@ def main():
         "&#127959; Course Fit",
         "&#128176; Betting Edge",
         "&#128202; Quant System",
+        "&#128300; Edge Analysis",
+        "&#127919; Simulator",
+        "&#128176; Capital",
+        "&#128680; Kill Switch",
+        "&#128200; Edge Monitor",
+        "&#9878; Verdict",
         "&#9881; Settings",
     ])
 
@@ -5033,6 +5374,18 @@ def main():
     with tabs[6]:
         tab_quant_system(proj_df, settings)
     with tabs[7]:
+        tab_edge_analysis(proj_df, settings)
+    with tabs[8]:
+        tab_simulator(proj_df, settings)
+    with tabs[9]:
+        tab_capital(proj_df, settings)
+    with tabs[10]:
+        tab_kill_switch(proj_df, settings)
+    with tabs[11]:
+        tab_edge_monitor(proj_df, settings)
+    with tabs[12]:
+        tab_verdict(proj_df, settings)
+    with tabs[13]:
         tab_settings(proj_df, settings)
 
 
