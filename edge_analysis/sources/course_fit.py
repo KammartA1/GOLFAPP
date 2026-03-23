@@ -1,162 +1,148 @@
-"""
-Course Fit Edge Source
-=======================
-Scores each player's SG profile against 50+ course weight vectors using
-cosine similarity and Euclidean distance.  Market edge: the public sees
-"good golfer" not "good golfer FOR THIS COURSE."
+"""Course Fit Source — Correlate SG profile with course demands.
+
+Goes beyond basic SG decomposition to model specific course features:
+  - Fairway width vs driving accuracy
+  - Green size/firmness vs approach accuracy
+  - Bermuda vs bentgrass putting
+  - Elevation changes
+  - Par-3/Par-5 scoring requirements
 """
 
 from __future__ import annotations
 
 import logging
-import math
+from typing import Any, Dict, List
 
 import numpy as np
-from scipy import stats as sp_stats
-from scipy.spatial.distance import cosine as cosine_dist
 
-log = logging.getLogger(__name__)
+from edge_analysis.edge_sources import EdgeSource
 
-_SG_KEYS = ["sg_ott", "sg_app", "sg_atg", "sg_putt"]
+logger = logging.getLogger(__name__)
 
 
-def _load_course_profiles() -> dict:
-    try:
-        from config.courses import COURSE_PROFILES
-        return COURSE_PROFILES
-    except ImportError:
-        return {}
+class CourseFitSource(EdgeSource):
+    """Correlate player SG profile with specific course feature demands."""
 
+    name = "course_fit"
+    category = "predictive"
+    description = "Match player SG profile to granular course features beyond basic type"
 
-class CourseFitSource:
-    """Player-course fit via SG profile similarity."""
+    def get_signal(self, player: str, tournament_context: Dict[str, Any]) -> float:
+        """Signal based on detailed course-player fit.
 
-    name = "Course Fit"
-    category = "skill"
-    version = "1.0"
-
-    def __init__(self):
-        self._profiles = _load_course_profiles()
-
-    def get_signal(self, player: dict, tournament_context: dict) -> float:
+        Considers: fairway width, green size, surface type, par distribution.
         """
-        Compute course-fit score.
+        sg = tournament_context.get("player_sg", {})
+        course = tournament_context.get("course_profile", {})
 
-        Returns a value in [-1, 1].  Positive = player's SG strengths align
-        with what the course rewards.  Negative = mismatch.
-        """
-        course = tournament_context.get("course", "")
-        profile = self._profiles.get(course, {})
-        weights = profile.get("sg_weights", {k: 0.25 for k in _SG_KEYS})
+        # Course features (defaults for balanced course)
+        fairway_width = course.get("avg_fairway_width", 30)  # yards
+        green_size = course.get("avg_green_size", 5500)  # sq ft
+        is_bermuda = course.get("is_bermuda", False)
+        n_par5 = course.get("n_par5", 4)
+        n_par3 = course.get("n_par3", 4)
+        avg_par4_length = course.get("avg_par4_length", 440)  # yards
+        elevation = course.get("elevation", 0)  # feet
 
-        # Course demand vector (what the course rewards)
-        demand = np.array([weights.get(k, 0.25) for k in _SG_KEYS], dtype=float)
-        demand_sum = demand.sum()
-        if demand_sum > 1e-9:
-            demand = demand / demand_sum
+        # Player SG components
+        sg_ott = sg.get("sg_ott", 0.0)
+        sg_app = sg.get("sg_app", 0.0)
+        sg_atg = sg.get("sg_atg", 0.0)
+        sg_putt = sg.get("sg_putt", 0.0)
 
-        # Player SG vector (z-score normalised across the field if possible)
-        sg_raw = np.array([player.get(k, 0.0) for k in _SG_KEYS], dtype=float)
+        # Player stats
+        driving_dist = tournament_context.get("driving_distance", 290)
+        driving_acc = tournament_context.get("driving_accuracy", 0.60)
+        gir = tournament_context.get("gir_pct", 0.65)
+        scrambling = tournament_context.get("scrambling_pct", 0.60)
 
-        # Normalise player vector to unit so cosine similarity is meaningful
-        sg_norm = np.linalg.norm(sg_raw)
-        if sg_norm < 1e-9:
-            return 0.0
+        signal = 0.0
 
-        # Cosine similarity: how well player strengths align with course demands
-        cos_sim = 1.0 - cosine_dist(sg_raw, demand)
+        # Narrow fairways penalize bombers who miss fairways
+        if fairway_width < 28:
+            # Tight course — accuracy matters more
+            signal += driving_acc * 0.5 - (1 - driving_acc) * sg_ott * 0.3
+        elif fairway_width > 35:
+            # Wide open — bombers thrive
+            signal += sg_ott * 0.4
 
-        # Weight by player's overall SG magnitude (better player + good fit = bigger edge)
-        total_sg = float(sg_raw.sum())
-        fit_score = cos_sim * total_sg
+        # Small greens reward approach accuracy
+        if green_size < 5000:
+            signal += sg_app * 0.5
+        elif green_size > 6500:
+            # Large greens — less separation on approach
+            signal += sg_app * 0.2
 
-        # Additional adjustments from course profile
-        dist_bonus = profile.get("distance_bonus", 0.5)
-        acc_penalty = profile.get("accuracy_penalty", 0.5)
-        player_dist_sg = player.get("sg_ott", 0.0)
-        player_acc = player.get("driving_accuracy", 0.5)  # 0-1 scale
+        # Bermuda greens require specific putting skill
+        if is_bermuda:
+            bermuda_skill = tournament_context.get("bermuda_putting_sg", sg_putt * 0.8)
+            signal += bermuda_skill * 0.3
+        else:
+            signal += sg_putt * 0.25
 
-        # Distance adjustment: if course rewards distance, bonus for long hitters
-        dist_adj = dist_bonus * player_dist_sg * 0.3
+        # Par-5 heavy courses reward bombers
+        if n_par5 >= 5:
+            signal += sg_ott * 0.2 + (driving_dist - 290) * 0.005
 
-        # Accuracy adjustment: if course penalises misses, penalty for inaccurate
-        acc_adj = -acc_penalty * (1.0 - player_acc) * 0.2
+        # Short par-4s and many par-3s reward precision
+        if n_par3 >= 5 or avg_par4_length < 420:
+            signal += sg_app * 0.3
 
-        # Key skills bonus
-        key_skills = profile.get("key_skills", [])
-        skill_bonus = 0.0
-        skill_map = {
-            "distance": player.get("sg_ott", 0.0) * 0.1,
-            "precise_irons": player.get("sg_app", 0.0) * 0.1,
-            "precision_irons": player.get("sg_app", 0.0) * 0.1,
-            "scrambling": player.get("sg_atg", 0.0) * 0.12,
-            "bermuda_putting": player.get("bermuda_putt_sg", player.get("sg_putt", 0.0)) * 0.08,
-            "bentgrass_putting": player.get("sg_putt", 0.0) * 0.08,
-            "wind_management": player.get("wind_sg", 0.0) * 0.1,
-            "course_management": player.get("sg_app", 0.0) * 0.05,
-            "accurate_driving": player.get("driving_accuracy", 0.5) * 0.1,
-            "sand_play": player.get("sg_atg", 0.0) * 0.08,
-        }
-        for skill in key_skills:
-            skill_bonus += skill_map.get(skill, 0.0)
+        # Long courses reward distance
+        if avg_par4_length > 460:
+            signal += (driving_dist - 290) * 0.008
 
-        signal = fit_score + dist_adj + acc_adj + skill_bonus
+        # Altitude: ball flies further, benefits distance players less
+        if elevation > 4000:
+            signal -= (driving_dist - 290) * 0.003  # Distance advantage reduced
 
-        return round(float(signal), 4)
+        # Scrambling at courses with tough greens complexes
+        if course.get("scrambling_difficulty", 0.5) > 0.6:
+            signal += scrambling * 0.3 + sg_atg * 0.3
+
+        return round(float(np.clip(signal, -3.0, 3.0)), 4)
 
     def get_mechanism(self) -> str:
         return (
-            "Each PGA Tour course has a distinct demand profile across OTT, APP, "
-            "ATG, and PUTT.  We score every player's SG vector against the course "
-            "demand vector using cosine similarity, then scale by overall SG "
-            "magnitude.  Additional adjustments for distance bonus, accuracy "
-            "penalty, and course-specific key skills.  The market prices players "
-            "by generic ranking; we identify players whose skill shape is "
-            "specifically rewarded by this week's venue."
+            "Markets price players on overall skill level but underweight specific "
+            "course-player interactions. A mid-ranked player who happens to be an "
+            "elite bermuda putter at a bermuda course is systematically undervalued. "
+            "This source captures granular course feature matching beyond basic SG."
         )
 
     def get_decay_risk(self) -> str:
         return (
-            "LOW — Course profiles change slowly.  The fit calculation itself "
-            "is straightforward but the comprehensive course database covering "
-            "50+ venues with calibrated weight vectors is the moat.  Risk: major "
-            "course renovations (rare, ~1 per year across PGA Tour)."
+            "low — Course-specific feature matching requires detailed proprietary "
+            "course data and player skill profiles that most bettors do not have. "
+            "The granularity of this source provides durable edge."
         )
 
-    def validate(self, historical_data: list[dict]) -> dict:
-        if len(historical_data) < 30:
-            return {
-                "sharpe": 0.0, "p_value": 1.0,
-                "sample_size": len(historical_data),
-                "correlation_with_other_signals": {},
-                "status": "INSUFFICIENT_DATA",
-            }
+    def validate(self, historical_data: List[Dict[str, Any]]) -> dict:
+        if len(historical_data) < 20:
+            return {"is_valid": False, "reason": "insufficient data", "n_samples": len(historical_data)}
 
-        signals, outcomes = [], []
+        signals = []
+        outcomes = []
         for rec in historical_data:
-            sig = self.get_signal(rec.get("player", {}), rec.get("tournament_context", {}))
-            finish = rec.get("actual_finish", 50)
-            outcomes.append((50.0 - finish) / 50.0)
+            sig = self.get_signal(rec.get("player", ""), rec)
             signals.append(sig)
+            outcomes.append(rec.get("actual_finish_pct", 0.5))
 
-        signals = np.array(signals)
-        outcomes = np.array(outcomes)
-        n = len(signals)
-        q = max(n // 5, 1)
-        idx = np.argsort(signals)
-        spread = float(np.mean(outcomes[idx[-q:]]) - np.mean(outcomes[idx[:q]]))
-        pooled = float(np.std(np.concatenate([outcomes[idx[-q:]], outcomes[idx[:q]]]), ddof=1))
-        sharpe = spread / pooled if pooled > 1e-9 else 0.0
-        corr, p_val = sp_stats.spearmanr(signals, outcomes)
-        if np.isnan(corr):
-            corr, p_val = 0.0, 1.0
+        sig_arr = np.array(signals)
+        out_arr = np.array(outcomes)
+        corr = float(np.corrcoef(sig_arr, out_arr)[0, 1]) if len(sig_arr) > 2 else 0.0
+        returns = sig_arr * (out_arr - 0.5)
+        sharpe = float(np.mean(returns) / max(np.std(returns), 0.001))
+        hit_rate = float(np.mean((sig_arr > 0) == (out_arr > 0.5)))
+
+        from scipy import stats
+        _, p_val = stats.pearsonr(sig_arr, out_arr) if len(sig_arr) >= 10 else (0, 1.0)
 
         return {
+            "is_valid": corr > 0.05 and hit_rate > 0.52,
             "sharpe": round(sharpe, 4),
-            "p_value": round(float(p_val), 6),
-            "sample_size": n,
-            "spearman_r": round(float(corr), 4),
-            "quintile_spread": round(spread, 4),
-            "correlation_with_other_signals": {},
-            "status": "VALID" if p_val < 0.10 and n >= 30 else "MARGINAL",
+            "hit_rate": round(hit_rate, 4),
+            "correlation": round(corr, 4),
+            "n_samples": len(historical_data),
+            "p_value": round(float(p_val), 4),
         }

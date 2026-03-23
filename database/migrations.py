@@ -1,302 +1,162 @@
-"""
-Golf Quant Engine — Schema Migrations
-======================================
-Lightweight migration framework built on SQLAlchemy.
+"""Schema versioning and migrations.
 
-Each migration is a versioned pair of ``up()`` / ``down()`` callables stored
-in a global registry.  ``auto_migrate()`` applies every pending migration in
-order.
+Lightweight migration system that tracks schema versions and applies
+incremental changes. For production PostgreSQL, swap to Alembic.
 
-The current schema version is persisted in a ``schema_versions`` table.
+Usage:
+    from database.migrations import MigrationManager
+    MigrationManager.run_pending()
 """
+
+from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Callable
 
-from sqlalchemy import (
-    Column,
-    DateTime,
-    Integer,
-    String,
-    Text,
-    Table,
-    MetaData,
-    text,
-    inspect,
-)
-from sqlalchemy.engine import Engine
+from sqlalchemy import Column, Integer, String, DateTime, Text, text, inspect
 
-from database.connection import get_engine
+from .connection import get_engine, DatabaseManager
+from .models import Base
 
-log = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Schema-version tracking table (raw metadata — not part of ORM Base)
-# ---------------------------------------------------------------------------
-_meta = MetaData()
-
-schema_versions_table = Table(
-    "schema_versions",
-    _meta,
-    Column("id", Integer, primary_key=True, autoincrement=True),
-    Column("version", Integer, nullable=False, unique=True),
-    Column("description", String(500), nullable=True),
-    Column("applied_at", DateTime, default=datetime.utcnow),
-    Column("rollback_sql", Text, nullable=True),
-)
+logger = logging.getLogger(__name__)
 
 
-def _ensure_version_table(engine: Engine) -> None:
-    """Create the schema_versions table if it doesn't exist."""
-    _meta.create_all(bind=engine, tables=[schema_versions_table])
+# ── Schema Version Table ──────────────────────────────────────────────
+
+class SchemaVersion(Base):
+    """Tracks applied migrations."""
+    __tablename__ = "schema_versions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    version = Column(Integer, nullable=False, unique=True)
+    description = Column(String(256), nullable=False)
+    applied_at = Column(DateTime, default=datetime.utcnow)
+    sql_applied = Column(Text, nullable=True)
 
 
-# ---------------------------------------------------------------------------
-# Migration registry
-# ---------------------------------------------------------------------------
-_migrations: dict[int, dict] = {}
+# ── Migration Definitions ─────────────────────────────────────────────
+
+MIGRATIONS = [
+    {
+        "version": 1,
+        "description": "Initial schema — all tables created by SQLAlchemy create_all",
+        "sql": None,  # Handled by Base.metadata.create_all
+    },
+    {
+        "version": 2,
+        "description": "Add composite indexes for common query patterns",
+        "sql": [
+            "CREATE INDEX IF NOT EXISTS ix_bet_settled_sport ON bets(sport, settled_at) WHERE settled_at IS NOT NULL",
+            "CREATE INDEX IF NOT EXISTS ix_line_recent ON line_movements(sport, source, captured_at DESC)",
+        ],
+    },
+    {
+        "version": 3,
+        "description": "Add worker heartbeat column",
+        "sql": [
+            "ALTER TABLE worker_state ADD COLUMN heartbeat_at DATETIME",
+        ],
+    },
+]
 
 
-def register_migration(
-    version: int,
-    description: str,
-    up: Callable[[Engine], None],
-    down: Callable[[Engine], None],
-) -> None:
-    """Register a migration with its version, description, and up/down callables."""
-    if version in _migrations:
-        raise ValueError(f"Migration version {version} is already registered.")
-    _migrations[version] = {
-        "description": description,
-        "up": up,
-        "down": down,
-    }
+class MigrationManager:
+    """Manages database schema migrations."""
 
+    @staticmethod
+    def get_current_version() -> int:
+        """Get the current schema version."""
+        engine = get_engine()
+        inspector = inspect(engine)
 
-# ---------------------------------------------------------------------------
-# Version helpers
-# ---------------------------------------------------------------------------
-def get_current_version(engine: Engine | None = None) -> int:
-    """Return the highest applied migration version, or 0 if none."""
-    engine = engine or get_engine()
-    _ensure_version_table(engine)
-    with engine.connect() as conn:
-        row = conn.execute(
-            text("SELECT MAX(version) AS v FROM schema_versions")
-        ).fetchone()
-        return row[0] if row and row[0] is not None else 0
+        if "schema_versions" not in inspector.get_table_names():
+            return 0
 
-
-def set_version(engine: Engine, version: int, description: str = "") -> None:
-    """Record that a migration version has been applied."""
-    with engine.begin() as conn:
-        conn.execute(
-            schema_versions_table.insert().values(
-                version=version,
-                description=description,
-                applied_at=datetime.utcnow(),
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT MAX(version) FROM schema_versions")
             )
-        )
+            row = result.fetchone()
+            return row[0] if row and row[0] else 0
 
+    @staticmethod
+    def run_pending():
+        """Apply all pending migrations."""
+        # Ensure all tables exist first
+        engine = get_engine()
+        Base.metadata.create_all(engine)
 
-def _remove_version(engine: Engine, version: int) -> None:
-    """Remove a version record (used during rollback)."""
-    with engine.begin() as conn:
-        conn.execute(
-            text("DELETE FROM schema_versions WHERE version = :v"),
-            {"v": version},
-        )
+        current = MigrationManager.get_current_version()
+        pending = [m for m in MIGRATIONS if m["version"] > current]
 
+        if not pending:
+            logger.debug("No pending migrations (current version: %d)", current)
+            return
 
-# ---------------------------------------------------------------------------
-# Core migration runner
-# ---------------------------------------------------------------------------
-def auto_migrate(engine: Engine | None = None) -> list[int]:
-    """Apply all pending migrations in ascending order.
+        logger.info("Applying %d pending migrations (current: v%d → v%d)",
+                     len(pending), current, pending[-1]["version"])
 
-    Returns the list of version numbers that were applied.
-    """
-    engine = engine or get_engine()
-    _ensure_version_table(engine)
-    current = get_current_version(engine)
+        for migration in pending:
+            MigrationManager._apply(migration)
 
-    pending = sorted(v for v in _migrations if v > current)
-    if not pending:
-        log.info("Schema is up-to-date at version %d.", current)
-        return []
+    @staticmethod
+    def _apply(migration: dict):
+        """Apply a single migration."""
+        version = migration["version"]
+        description = migration["description"]
+        sql_statements = migration.get("sql")
 
-    applied: list[int] = []
-    for ver in pending:
-        mig = _migrations[ver]
-        log.info("Applying migration v%d: %s", ver, mig["description"])
+        engine = get_engine()
+        sql_log = []
+
         try:
-            mig["up"](engine)
-            set_version(engine, ver, mig["description"])
-            applied.append(ver)
-            log.info("Migration v%d applied successfully.", ver)
+            if sql_statements:
+                with engine.connect() as conn:
+                    for stmt in sql_statements:
+                        try:
+                            conn.execute(text(stmt))
+                            sql_log.append(stmt)
+                        except Exception as e:
+                            # SQLite doesn't support IF NOT EXISTS for ALTER TABLE
+                            if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
+                                logger.debug("Skipping already-applied: %s", stmt[:80])
+                                sql_log.append(f"SKIPPED: {stmt}")
+                            else:
+                                raise
+                    conn.commit()
+
+            # Record migration
+            with DatabaseManager.session_scope() as session:
+                record = SchemaVersion(
+                    version=version,
+                    description=description,
+                    applied_at=datetime.utcnow(),
+                    sql_applied="\n".join(sql_log) if sql_log else "create_all",
+                )
+                session.add(record)
+
+            logger.info("Migration v%d applied: %s", version, description)
+
         except Exception:
-            log.exception("Migration v%d FAILED — stopping.", ver)
+            logger.exception("Migration v%d FAILED: %s", version, description)
             raise
 
-    return applied
+    @staticmethod
+    def verify_schema() -> dict:
+        """Verify that all expected tables exist."""
+        engine = get_engine()
+        inspector = inspect(engine)
+        existing = set(inspector.get_table_names())
 
+        expected = {t.name for t in Base.metadata.sorted_tables}
+        missing = expected - existing
+        extra = existing - expected - {"sqlite_sequence"}  # SQLite internal
 
-def rollback(target_version: int = 0, engine: Engine | None = None) -> list[int]:
-    """Roll back migrations from current version down to (and including)
-    target_version + 1.
-
-    Returns the list of version numbers that were rolled back.
-    """
-    engine = engine or get_engine()
-    _ensure_version_table(engine)
-    current = get_current_version(engine)
-
-    to_rollback = sorted(
-        (v for v in _migrations if target_version < v <= current),
-        reverse=True,
-    )
-    if not to_rollback:
-        log.info("Nothing to roll back (current=%d, target=%d).", current, target_version)
-        return []
-
-    rolled: list[int] = []
-    for ver in to_rollback:
-        mig = _migrations[ver]
-        log.info("Rolling back migration v%d: %s", ver, mig["description"])
-        try:
-            mig["down"](engine)
-            _remove_version(engine, ver)
-            rolled.append(ver)
-            log.info("Rollback v%d completed.", ver)
-        except Exception:
-            log.exception("Rollback v%d FAILED — stopping.", ver)
-            raise
-
-    return rolled
-
-
-def get_migration_status(engine: Engine | None = None) -> dict:
-    """Return a summary of migration state."""
-    engine = engine or get_engine()
-    _ensure_version_table(engine)
-    current = get_current_version(engine)
-    latest = max(_migrations.keys()) if _migrations else 0
-    pending = sorted(v for v in _migrations if v > current)
-    return {
-        "current_version": current,
-        "latest_available": latest,
-        "pending_versions": pending,
-        "is_up_to_date": current >= latest,
-    }
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# MIGRATION V1 — Initial schema (creates all ORM tables)
-# ═══════════════════════════════════════════════════════════════════════════
-def _v1_up(engine: Engine) -> None:
-    """Create every table defined in models.py via metadata.create_all."""
-    from database.models import Base
-    Base.metadata.create_all(bind=engine)
-    log.info("V1 UP: All ORM tables created.")
-
-
-def _v1_down(engine: Engine) -> None:
-    """Drop every ORM-managed table (destructive!)."""
-    from database.models import Base
-    Base.metadata.drop_all(bind=engine)
-    log.info("V1 DOWN: All ORM tables dropped.")
-
-
-register_migration(
-    version=1,
-    description="Initial schema — create all 13 ORM tables",
-    up=_v1_up,
-    down=_v1_down,
-)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# MIGRATION V2 — Add composite indexes for common dashboard queries
-# ═══════════════════════════════════════════════════════════════════════════
-def _v2_up(engine: Engine) -> None:
-    """Add supplemental indexes for dashboard performance."""
-    ddl_statements = [
-        "CREATE INDEX IF NOT EXISTS ix_bets_sport_settled ON bets (sport, settled_at)",
-        "CREATE INDEX IF NOT EXISTS ix_bets_status_pnl ON bets (status, pnl)",
-        "CREATE INDEX IF NOT EXISTS ix_signals_edge ON signals (edge_pct)",
-        "CREATE INDEX IF NOT EXISTS ix_sg_stats_sg_total ON sg_stats (sg_total)",
-        "CREATE INDEX IF NOT EXISTS ix_lm_player_ts ON line_movements (player, timestamp)",
-    ]
-    with engine.begin() as conn:
-        for stmt in ddl_statements:
-            conn.execute(text(stmt))
-    log.info("V2 UP: Dashboard indexes created.")
-
-
-def _v2_down(engine: Engine) -> None:
-    """Remove the supplemental indexes."""
-    drop_statements = [
-        "DROP INDEX IF EXISTS ix_bets_sport_settled",
-        "DROP INDEX IF EXISTS ix_bets_status_pnl",
-        "DROP INDEX IF EXISTS ix_signals_edge",
-        "DROP INDEX IF EXISTS ix_sg_stats_sg_total",
-        "DROP INDEX IF EXISTS ix_lm_player_ts",
-    ]
-    with engine.begin() as conn:
-        for stmt in drop_statements:
-            conn.execute(text(stmt))
-    log.info("V2 DOWN: Dashboard indexes dropped.")
-
-
-register_migration(
-    version=2,
-    description="Add composite indexes for dashboard query performance",
-    up=_v2_up,
-    down=_v2_down,
-)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# MIGRATION V3 — Add weather_data ORM table and ensure all new columns exist
-# ═══════════════════════════════════════════════════════════════════════════
-def _v3_up(engine: Engine) -> None:
-    """Create weather_data table via ORM and add any missing columns."""
-    from database.models import Base
-    Base.metadata.create_all(bind=engine)
-
-    # Ensure edge_pct column exists on bets table (may be missing on older DBs)
-    insp = inspect(engine)
-    bet_cols = {c["name"] for c in insp.get_columns("bets")}
-    ddl = []
-    if "edge_pct" not in bet_cols:
-        ddl.append("ALTER TABLE bets ADD COLUMN edge_pct REAL")
-
-    # Ensure kelly_stake column exists on signals
-    sig_cols = {c["name"] for c in insp.get_columns("signals")}
-    if "kelly_stake" not in sig_cols:
-        ddl.append("ALTER TABLE signals ADD COLUMN kelly_stake REAL")
-
-    if ddl:
-        with engine.begin() as conn:
-            for stmt in ddl:
-                try:
-                    conn.execute(text(stmt))
-                except Exception:
-                    pass  # Column may already exist
-    log.info("V3 UP: weather_data table + column patches applied.")
-
-
-def _v3_down(engine: Engine) -> None:
-    """Drop weather_data table."""
-    with engine.begin() as conn:
-        conn.execute(text("DROP TABLE IF EXISTS weather_data"))
-    log.info("V3 DOWN: weather_data table dropped.")
-
-
-register_migration(
-    version=3,
-    description="Add weather_data ORM table and ensure column patches",
-    up=_v3_up,
-    down=_v3_down,
-)
+        return {
+            "version": MigrationManager.get_current_version(),
+            "expected_tables": len(expected),
+            "existing_tables": len(existing),
+            "missing": sorted(missing),
+            "extra": sorted(extra),
+            "healthy": len(missing) == 0,
+        }

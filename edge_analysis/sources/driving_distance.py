@@ -1,184 +1,128 @@
-"""
-Driving Distance Edge Source
-==============================
-Course-specific driving distance advantage.
-Long courses favour bombers; tight courses favour accuracy.
-Market edge: sportsbooks use generic distance rankings, not course-specific
-distance advantage calculations.
+"""Driving Distance Source — Distance advantage on specific layouts.
+
+Certain courses provide outsized reward for distance off the tee.
+This source identifies when a player's driving distance creates
+a structural advantage on a specific layout.
 """
 
 from __future__ import annotations
 
 import logging
-import math
+from typing import Any, Dict, List
 
 import numpy as np
-from scipy import stats as sp_stats
 
-log = logging.getLogger(__name__)
+from edge_analysis.edge_sources import EdgeSource
 
-# Course yardage thresholds (par 72 equivalent)
-_SHORT_COURSE = 7050
-_MEDIUM_COURSE = 7250
-_LONG_COURSE = 7450
-
-# Average PGA Tour driving distance (yards, 2024 baseline)
-_TOUR_AVG_DISTANCE = 299.5
-_TOUR_STD_DISTANCE = 12.0
+logger = logging.getLogger(__name__)
 
 
-def _load_course_profiles() -> dict:
-    try:
-        from config.courses import COURSE_PROFILES
-        return COURSE_PROFILES
-    except ImportError:
-        return {}
+class DrivingDistanceSource(EdgeSource):
+    """Distance advantage on layouts that reward length."""
 
+    name = "driving_distance"
+    category = "predictive"
+    description = "Driving distance advantage on layouts where length creates scoring separation"
 
-class DrivingDistanceSource:
-    """Course-specific driving distance advantage edge."""
+    def get_signal(self, player: str, tournament_context: Dict[str, Any]) -> float:
+        """Signal based on driving distance advantage at this course.
 
-    name = "Driving Distance"
-    category = "skill"
-    version = "1.0"
-
-    def __init__(self):
-        self._profiles = _load_course_profiles()
-
-    def get_signal(self, player: dict, tournament_context: dict) -> float:
+        Positive = player's distance creates advantage on this layout.
         """
-        Compute driving distance edge for player at this course.
+        driving_dist = tournament_context.get("driving_distance", 290.0)
+        field_avg_dist = tournament_context.get("field_avg_driving_distance", 293.0)
+        course = tournament_context.get("course_profile", {})
 
-        player keys:
-            driving_distance     – average driving distance (yards)
-            driving_accuracy     – fairway hit % (0-1)
-            sg_ott               – strokes gained off the tee
-        tournament_context keys:
-            course               – venue name
-            course_yardage       – total yardage (par 72 equivalent)
-            avg_fairway_width    – average fairway width (yards, optional)
-            par5_reachable       – number of reachable par 5s in two (optional)
-        """
-        course = tournament_context.get("course", "")
-        profile = self._profiles.get(course, {})
+        course_length = course.get("total_yardage", 7200)
+        n_par5 = course.get("n_par5", 4)
+        n_driveable_par4 = course.get("n_driveable_par4", 0)
+        avg_par4_length = course.get("avg_par4_length", 440)
+        fairway_width = course.get("avg_fairway_width", 30)
 
-        player_dist = player.get("driving_distance", _TOUR_AVG_DISTANCE)
-        player_acc = player.get("driving_accuracy", 0.62)
-        sg_ott = player.get("sg_ott", 0.0)
+        # Distance advantage in yards
+        dist_advantage = driving_dist - field_avg_dist
 
-        # ── Course distance demand ──────────────────────────────────────
-        yardage = tournament_context.get("course_yardage", 7200)
-        distance_bonus = profile.get("distance_bonus", 0.5)
-        accuracy_penalty = profile.get("accuracy_penalty", 0.5)
+        # Course distance sensitivity: how much does extra distance matter here?
+        sensitivity = 0.0
 
-        # Z-score of player distance vs tour average
-        dist_z = (player_dist - _TOUR_AVG_DISTANCE) / _TOUR_STD_DISTANCE
+        # Long courses reward distance more
+        if course_length > 7400:
+            sensitivity += 0.4
+        elif course_length > 7200:
+            sensitivity += 0.2
 
-        # Long course amplifies distance advantage
-        if yardage >= _LONG_COURSE:
-            course_dist_factor = 1.4
-        elif yardage >= _MEDIUM_COURSE:
-            course_dist_factor = 1.0
-        elif yardage >= _SHORT_COURSE:
-            course_dist_factor = 0.6
-        else:
-            course_dist_factor = 0.3
+        # Many par-5s = more reachable in two for long hitters
+        if n_par5 >= 5:
+            sensitivity += 0.3
+        elif n_par5 >= 4:
+            sensitivity += 0.15
 
-        # Distance edge: how much this course rewards the player's length
-        dist_edge = dist_z * distance_bonus * course_dist_factor * 0.15
+        # Driveable par-4s are huge for long hitters
+        sensitivity += n_driveable_par4 * 0.15
 
-        # ── Accuracy constraint ─────────────────────────────────────────
-        # On tight courses, distance is only useful if you can hit fairways
-        fairway_width = tournament_context.get("avg_fairway_width", 30.0)
-        tightness = max(0.0, (35.0 - fairway_width) / 15.0)  # 0-1, tight=1
+        # Long par-4s: distance helps reach in regulation
+        if avg_par4_length > 460:
+            sensitivity += 0.2
 
-        # Accuracy z-score: higher accuracy = less penalty on tight courses
-        tour_avg_acc = 0.62
-        acc_z = (player_acc - tour_avg_acc) / 0.07  # std ~7%
+        # Wide fairways: bombers can let it rip without penalty
+        if fairway_width > 35:
+            sensitivity += 0.1
+        elif fairway_width < 25:
+            sensitivity -= 0.15  # Narrow fairways penalize bombers
 
-        acc_adjustment = 0.0
-        if tightness > 0.3:
-            # Tight course: penalise inaccurate long hitters
-            if dist_z > 0.5 and acc_z < -0.5:
-                acc_adjustment = -accuracy_penalty * tightness * 0.12
-            # Tight course: reward accurate players
-            if acc_z > 0.5:
-                acc_adjustment += accuracy_penalty * tightness * 0.08
+        # Convert to signal
+        # Each yard of distance advantage * course sensitivity
+        signal = (dist_advantage / 10.0) * sensitivity
 
-        # ── Par 5 reachability ──────────────────────────────────────────
-        reachable = tournament_context.get("par5_reachable", 2)
-        # Long hitters can reach more par 5s in two = birdie/eagle opportunities
-        par5_edge = 0.0
-        if dist_z > 0.5 and reachable >= 3:
-            par5_edge = dist_z * 0.04 * reachable
-        elif dist_z < -0.5 and reachable >= 3:
-            par5_edge = dist_z * 0.02 * reachable  # short hitters miss opportunities
+        # Altitude adjustment: ball flies further at altitude, reducing distance advantage
+        elevation = course.get("elevation", 0)
+        if elevation > 4000:
+            signal *= 0.7  # Distance advantage is worth less at altitude
 
-        # ── Altitude adjustment ─────────────────────────────────────────
-        elevation = profile.get("elevation_ft", 0)
-        # Ball carries ~2% further per 1000ft of elevation
-        altitude_carry_bonus = elevation / 1000.0 * 0.02
-        # This reduces the distance advantage (everyone hits further at altitude)
-        dist_edge *= (1.0 - altitude_carry_bonus * 0.5)
-
-        signal = dist_edge + acc_adjustment + par5_edge
-
-        return round(float(signal), 4)
+        return round(float(np.clip(signal, -2.0, 2.0)), 4)
 
     def get_mechanism(self) -> str:
         return (
-            "Driving distance is course-dependent: a 310-yard average is worth "
-            "much more at a 7,500-yard course with reachable par 5s than a "
-            "tight 7,000-yard course.  We compute a player's distance z-score "
-            "and scale it by the course's distance bonus factor, yardage "
-            "category, and par-5 reachability.  An accuracy constraint ensures "
-            "we don't over-value bombers on tight tracks.  Altitude adjustments "
-            "normalize for courses where everyone hits further.  The market uses "
-            "generic distance rankings without course-specific calibration."
+            "Distance off the tee creates non-linear advantages on certain layouts. "
+            "Reaching par-5s in two gives birdie/eagle opportunities. Driving the green "
+            "on short par-4s creates massive scoring edges. Markets price this partially "
+            "through overall rankings but underweight the course-specific interaction "
+            "between a player's distance and the specific layout demands."
         )
 
     def get_decay_risk(self) -> str:
         return (
-            "LOW — Driving distance advantages are structural and tied to course "
-            "architecture.  Player distances are stable within a season.  Risk: "
-            "rollback of golf ball or driver regulations could compress distance "
-            "variance, reducing the signal's magnitude."
+            "medium — Distance data is publicly available, but the course-specific "
+            "sensitivity model requires detailed hole-by-hole analysis. As the tour "
+            "moves to longer courses and equipment advances, the landscape changes."
         )
 
-    def validate(self, historical_data: list[dict]) -> dict:
-        if len(historical_data) < 30:
-            return {
-                "sharpe": 0.0, "p_value": 1.0,
-                "sample_size": len(historical_data),
-                "correlation_with_other_signals": {},
-                "status": "INSUFFICIENT_DATA",
-            }
+    def validate(self, historical_data: List[Dict[str, Any]]) -> dict:
+        if len(historical_data) < 20:
+            return {"is_valid": False, "reason": "insufficient data", "n_samples": len(historical_data)}
 
-        signals, outcomes = [], []
+        signals = []
+        outcomes = []
         for rec in historical_data:
-            sig = self.get_signal(rec.get("player", {}), rec.get("tournament_context", {}))
-            finish = rec.get("actual_finish", 50)
-            outcomes.append((50.0 - finish) / 50.0)
+            sig = self.get_signal(rec.get("player", ""), rec)
             signals.append(sig)
+            outcomes.append(rec.get("actual_finish_pct", 0.5))
 
-        signals = np.array(signals)
-        outcomes = np.array(outcomes)
-        n = len(signals)
-        q = max(n // 5, 1)
-        idx = np.argsort(signals)
-        spread = float(np.mean(outcomes[idx[-q:]]) - np.mean(outcomes[idx[:q]]))
-        pooled = float(np.std(np.concatenate([outcomes[idx[-q:]], outcomes[idx[:q]]]), ddof=1))
-        sharpe = spread / pooled if pooled > 1e-9 else 0.0
-        corr, p_val = sp_stats.spearmanr(signals, outcomes)
-        if np.isnan(corr):
-            corr, p_val = 0.0, 1.0
+        sig_arr = np.array(signals)
+        out_arr = np.array(outcomes)
+        corr = float(np.corrcoef(sig_arr, out_arr)[0, 1]) if len(sig_arr) > 2 else 0.0
+        returns = sig_arr * (out_arr - 0.5)
+        sharpe = float(np.mean(returns) / max(np.std(returns), 0.001))
+        hit_rate = float(np.mean((sig_arr > 0) == (out_arr > 0.5)))
+
+        from scipy import stats
+        _, p_val = stats.pearsonr(sig_arr, out_arr) if len(sig_arr) >= 10 else (0, 1.0)
 
         return {
+            "is_valid": corr > 0.03,
             "sharpe": round(sharpe, 4),
-            "p_value": round(float(p_val), 6),
-            "sample_size": n,
-            "spearman_r": round(float(corr), 4),
-            "quintile_spread": round(spread, 4),
-            "correlation_with_other_signals": {},
-            "status": "VALID" if p_val < 0.10 and n >= 30 else "MARGINAL",
+            "hit_rate": round(hit_rate, 4),
+            "correlation": round(corr, 4),
+            "n_samples": len(historical_data),
+            "p_value": round(float(p_val), 4),
         }

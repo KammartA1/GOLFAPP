@@ -1,69 +1,68 @@
-"""
-Golf Quant Engine — Database Connection Manager
-================================================
-SQLite-backed with SQLAlchemy 2.0+ ORM.  Designed for seamless upgrade to
-PostgreSQL by swapping the DATABASE_URL env var.
+"""Unified database connection manager.
 
-Features:
-  - Singleton engine / session factory
-  - WAL journal mode for SQLite
-  - Foreign keys enforced
-  - Connection pooling via SQLAlchemy
-  - Health-check helper
+Single source of truth for ALL database connections across the app.
+SQLite with WAL mode now, upgradeable to PostgreSQL by changing the URL.
+
+Usage:
+    from database.connection import get_engine, get_session, DatabaseManager
+
+    # Quick session
+    with DatabaseManager.session_scope() as session:
+        session.query(Bet).all()
+
+    # Or manual
+    session = get_session()
+    try:
+        ...
+    finally:
+        session.close()
 """
+
+from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
-from threading import Lock
-from typing import Generator
+import threading
+from contextlib import contextmanager
 
 from sqlalchemy import create_engine, event, text
-from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.pool import StaticPool
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-_DEFAULT_DB_DIR = Path(__file__).resolve().parent.parent / "data"
-_DEFAULT_DB_NAME = "golf_quant.db"
-
-_engine: Engine | None = None
-_session_factory: sessionmaker | None = None
-_lock = Lock()
+_lock = threading.Lock()
+_engine = None
+_SessionFactory = None
 
 
-def _resolve_url() -> str:
-    """Return the database URL from env or build a default SQLite path."""
-    url = os.environ.get("DATABASE_URL")
-    if url:
-        return url
-    _DEFAULT_DB_DIR.mkdir(parents=True, exist_ok=True)
-    db_path = os.environ.get("GOLF_DB_PATH", str(_DEFAULT_DB_DIR / _DEFAULT_DB_NAME))
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+def _default_db_path() -> str:
+    """Resolve the default database path."""
+    return os.environ.get(
+        "QUANT_DB_PATH",
+        os.path.join(os.path.dirname(__file__), "..", "data", "quant_system.db"),
+    )
+
+
+def get_db_url(db_path: str | None = None) -> str:
+    """Build a database URL. Supports SQLite and PostgreSQL.
+
+    Set QUANT_DATABASE_URL env var for PostgreSQL:
+        export QUANT_DATABASE_URL=postgresql://user:pass@host:5432/dbname
+    """
+    env_url = os.environ.get("QUANT_DATABASE_URL")
+    if env_url:
+        return env_url
+
+    if db_path is None:
+        db_path = _default_db_path()
+    db_path = os.path.abspath(db_path)
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
     return f"sqlite:///{db_path}"
 
 
-# ---------------------------------------------------------------------------
-# SQLite-specific PRAGMA hooks
-# ---------------------------------------------------------------------------
-def _set_sqlite_pragmas(dbapi_conn, connection_record):
-    """Enable WAL mode and foreign keys for every new raw DBAPI connection."""
-    cursor = dbapi_conn.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA foreign_keys=ON")
-    cursor.execute("PRAGMA busy_timeout=5000")
-    cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.close()
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-def get_engine() -> Engine:
-    """Return the singleton SQLAlchemy engine, creating it on first call."""
+def get_engine(db_path: str | None = None):
+    """Get or create the singleton SQLAlchemy engine."""
     global _engine
     if _engine is not None:
         return _engine
@@ -72,105 +71,97 @@ def get_engine() -> Engine:
         if _engine is not None:
             return _engine
 
-        url = _resolve_url()
+        url = get_db_url(db_path)
         is_sqlite = url.startswith("sqlite")
 
-        kwargs: dict = {}
+        kwargs = {"echo": False}
         if is_sqlite:
-            kwargs.update(
-                pool_pre_ping=True,
-                connect_args={"check_same_thread": False},
-            )
-        else:
-            kwargs.update(
-                pool_size=5,
-                max_overflow=10,
-                pool_pre_ping=True,
-                pool_recycle=3600,
-            )
+            kwargs["connect_args"] = {"check_same_thread": False}
+            # Use StaticPool for in-memory DBs (testing)
+            if ":memory:" in url:
+                kwargs["poolclass"] = StaticPool
 
-        engine = create_engine(url, echo=False, **kwargs)
+        _engine = create_engine(url, **kwargs)
 
         if is_sqlite:
-            event.listen(engine, "connect", _set_sqlite_pragmas)
+            # Enable WAL mode and foreign keys on every connection
+            @event.listens_for(_engine, "connect")
+            def _set_sqlite_pragma(dbapi_conn, connection_record):
+                cursor = dbapi_conn.cursor()
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.execute("PRAGMA busy_timeout=5000")
+                cursor.close()
 
-        _engine = engine
-        log.info("Database engine created: %s", url.split("?")[0])
-        return _engine
+        # Create all tables
+        from .models import Base
+        Base.metadata.create_all(_engine)
 
+        logger.info("Database engine initialized: %s", url.split("@")[-1] if "@" in url else url)
 
-def get_session_factory() -> sessionmaker:
-    """Return the singleton session factory."""
-    global _session_factory
-    if _session_factory is not None:
-        return _session_factory
-
-    with _lock:
-        if _session_factory is not None:
-            return _session_factory
-        _session_factory = sessionmaker(bind=get_engine(), expire_on_commit=False)
-        return _session_factory
+    return _engine
 
 
-def get_session() -> Generator[Session, None, None]:
-    """Context-manager that yields a scoped session and auto-commits / rolls
-    back.  Usage::
-
-        with get_session() as session:
-            session.add(obj)
-    """
-    factory = get_session_factory()
-    session = factory()
-    try:
-        yield session
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+def get_session(db_path: str | None = None) -> Session:
+    """Get a new SQLAlchemy session."""
+    global _SessionFactory
+    if _SessionFactory is None:
+        with _lock:
+            if _SessionFactory is None:
+                engine = get_engine(db_path)
+                _SessionFactory = sessionmaker(bind=engine)
+    return _SessionFactory()
 
 
-def init_db() -> None:
-    """Create every table defined in *models.py* (idempotent)."""
-    from database.models import Base  # local import to break circular ref
-
-    engine = get_engine()
-    Base.metadata.create_all(bind=engine)
-    log.info("All tables created / verified.")
-
-
-def health_check() -> dict:
-    """Quick connectivity + version check.  Returns a dict with status info."""
-    engine = get_engine()
-    try:
-        with engine.connect() as conn:
-            if engine.url.drivername.startswith("sqlite"):
-                row = conn.execute(text("SELECT sqlite_version()")).fetchone()
-                version = row[0] if row else "unknown"
-                wal_row = conn.execute(text("PRAGMA journal_mode")).fetchone()
-                journal = wal_row[0] if wal_row else "unknown"
-            else:
-                row = conn.execute(text("SELECT version()")).fetchone()
-                version = row[0] if row else "unknown"
-                journal = "n/a"
-
-            return {
-                "status": "ok",
-                "driver": engine.url.drivername,
-                "version": version,
-                "journal_mode": journal,
-            }
-    except Exception as exc:
-        log.error("Health-check failed: %s", exc)
-        return {"status": "error", "error": str(exc)}
-
-
-def reset_engine() -> None:
-    """Dispose of the current engine (useful for testing)."""
-    global _engine, _session_factory
+def reset_engine():
+    """Reset the engine and session factory. Used in testing."""
+    global _engine, _SessionFactory
     with _lock:
         if _engine is not None:
             _engine.dispose()
-            _engine = None
-        _session_factory = None
+        _engine = None
+        _SessionFactory = None
+
+
+class DatabaseManager:
+    """High-level database manager with context-managed sessions."""
+
+    @staticmethod
+    @contextmanager
+    def session_scope():
+        """Provide a transactional scope around a series of operations.
+
+        Usage:
+            with DatabaseManager.session_scope() as session:
+                session.add(something)
+                # auto-commits on success, auto-rollbacks on exception
+        """
+        session = get_session()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    @staticmethod
+    def execute_raw(sql: str, params: dict | None = None):
+        """Execute raw SQL for migrations or one-off queries."""
+        engine = get_engine()
+        with engine.connect() as conn:
+            result = conn.execute(text(sql), params or {})
+            conn.commit()
+            return result
+
+    @staticmethod
+    def health_check() -> dict:
+        """Quick database health check."""
+        try:
+            engine = get_engine()
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            return {"status": "healthy", "url": str(engine.url).split("@")[-1]}
+        except Exception as e:
+            return {"status": "unhealthy", "error": str(e)}

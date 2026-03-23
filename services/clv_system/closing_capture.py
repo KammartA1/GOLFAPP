@@ -1,441 +1,160 @@
-"""
-services/clv_system/closing_capture.py
-========================================
-Automatic closing line capture at event start.
-
-"Closing line" = last line available before an event starts.
-  - NBA: capture lines at tip-off time
-  - Golf: capture lines at first tee time of the round
-
-This module monitors event start times and automatically captures
-closing lines, then matches them to bet records for CLV calculation.
-"""
+"""Closing line capture — Capture closing lines at first tee time."""
 
 from __future__ import annotations
 
-import json
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from datetime import datetime
+from typing import List, Optional
 
-from sqlalchemy import func as sa_func, and_
+from database.connection import DatabaseManager
+from services.clv_system.models import ClosingLineRecord, OddsSnapshot, BetPriceSnapshot
 
-from quant_system.db.schema import get_engine, get_session, BetLog, CLVLog
-from services.clv_system.models import (
-    CLVLineMovement,
-    CLVClosingLine,
-    Base,
-)
-
-log = logging.getLogger(__name__)
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+logger = logging.getLogger(__name__)
 
 
 class ClosingLineCapture:
-    """Automatic closing line capture and bet-matching service.
-
-    Monitors event start times and captures the last available line
-    before each event begins.  Then matches closing lines to bet records
-    so CLV can be calculated.
-    """
-
-    def __init__(self, sport: str = "GOLF", db_path: str | None = None):
-        self.sport = sport
-        self._db_path = db_path
-        engine = get_engine(db_path)
-        Base.metadata.create_all(engine)
-
-    def _session(self):
-        return get_session(self._db_path)
-
-    # ── Capture closing lines for an event ───────────────────────────
+    """Capture closing lines at tournament start (first tee time)."""
 
     def capture_closing_lines(
         self,
         event_id: str,
-        event_start_time: Optional[datetime] = None,
-    ) -> Dict[str, Any]:
-        """Capture closing lines for all player/market combos in an event.
+        first_tee_time: Optional[datetime] = None,
+    ) -> int:
+        """Capture closing lines for all players/markets in an event.
 
-        Takes the last recorded line before the event_start_time for each
-        player/market/book combination and stores them as closing lines.
-
-        Args:
-            event_id: Event identifier (tournament round, game name, etc.)
-            event_start_time: When the event starts. Defaults to now.
-
-        Returns:
-            Summary dict with counts.
+        Should be called just before the first tee time.
+        Returns count of closing lines captured.
         """
-        if event_start_time is None:
-            event_start_time = _utcnow()
+        if first_tee_time is None:
+            first_tee_time = datetime.utcnow()
 
-        session = self._session()
-        captured = 0
+        count = 0
+        with DatabaseManager.session_scope() as session:
+            # Get the latest odds for each player/market/source combination
+            from sqlalchemy import func
 
-        try:
-            # Find the last line for each player/market/book before event start
-            subq = (
+            latest_subq = (
                 session.query(
-                    CLVLineMovement.player,
-                    CLVLineMovement.market_type,
-                    CLVLineMovement.book,
-                    sa_func.max(CLVLineMovement.timestamp).label("max_ts"),
+                    OddsSnapshot.player,
+                    OddsSnapshot.market_type,
+                    OddsSnapshot.source,
+                    func.max(OddsSnapshot.id).label("max_id"),
                 )
-                .filter(
-                    CLVLineMovement.sport == self.sport,
-                    CLVLineMovement.event_id == event_id,
-                    CLVLineMovement.timestamp <= event_start_time,
-                )
+                .filter(OddsSnapshot.event_id == event_id)
                 .group_by(
-                    CLVLineMovement.player,
-                    CLVLineMovement.market_type,
-                    CLVLineMovement.book,
+                    OddsSnapshot.player,
+                    OddsSnapshot.market_type,
+                    OddsSnapshot.source,
                 )
                 .subquery()
             )
 
-            closing_rows = (
-                session.query(CLVLineMovement)
-                .join(
-                    subq,
-                    and_(
-                        CLVLineMovement.player == subq.c.player,
-                        CLVLineMovement.market_type == subq.c.market_type,
-                        CLVLineMovement.book == subq.c.book,
-                        CLVLineMovement.timestamp == subq.c.max_ts,
-                    ),
-                )
-                .filter(CLVLineMovement.event_id == event_id)
+            latest_snaps = (
+                session.query(OddsSnapshot)
+                .join(latest_subq, OddsSnapshot.id == latest_subq.c.max_id)
                 .all()
             )
 
-            # Also mark them as closing in the line_movements table
-            for row in closing_rows:
-                row.is_closing = True
+            for snap in latest_snaps:
+                # Mark the original snapshot as closing
+                snap.is_closing = True
 
-                # Check if we already have this closing line
-                existing = (
-                    session.query(CLVClosingLine)
-                    .filter(
-                        CLVClosingLine.event_id == event_id,
-                        CLVClosingLine.player == row.player,
-                        CLVClosingLine.market_type == row.market_type,
-                        CLVClosingLine.book == row.book,
-                    )
-                    .first()
-                )
-                if existing:
-                    existing.closing_line = row.line
-                    existing.closing_odds_american = row.odds_american
-                    existing.closing_odds_decimal = row.odds_decimal
-                    existing.closing_implied_prob = row.implied_prob
-                    existing.captured_at = _utcnow()
-                else:
-                    cl = CLVClosingLine(
-                        sport=self.sport,
-                        event_id=event_id,
-                        player=row.player,
-                        market_type=row.market_type,
-                        book=row.book,
-                        closing_line=row.line,
-                        closing_odds_american=row.odds_american,
-                        closing_odds_decimal=row.odds_decimal,
-                        closing_implied_prob=row.implied_prob,
-                        event_start_time=event_start_time,
-                        captured_at=_utcnow(),
-                        is_consensus=False,
-                    )
-                    session.add(cl)
-                captured += 1
-
-            # Also create consensus closing lines
-            self._create_consensus_closings(session, event_id, event_start_time)
-
-            session.commit()
-            log.info(
-                "Captured %d closing lines for event %s",
-                captured, event_id,
-            )
-
-            return {
-                "event_id": event_id,
-                "closing_lines_captured": captured,
-                "event_start_time": event_start_time.isoformat(),
-            }
-
-        except Exception:
-            session.rollback()
-            log.exception("Failed to capture closing lines for %s", event_id)
-            raise
-        finally:
-            session.close()
-
-    def _create_consensus_closings(
-        self,
-        session,
-        event_id: str,
-        event_start_time: datetime,
-    ) -> None:
-        """Create consensus closing lines (median across books) for each player/market."""
-        closings = (
-            session.query(CLVClosingLine)
-            .filter(
-                CLVClosingLine.event_id == event_id,
-                CLVClosingLine.sport == self.sport,
-                CLVClosingLine.is_consensus == False,  # noqa: E712
-            )
-            .all()
-        )
-
-        # Group by player/market
-        groups: Dict[tuple, List[float]] = {}
-        for cl in closings:
-            key = (cl.player, cl.market_type)
-            groups.setdefault(key, []).append(cl.closing_line)
-
-        for (player, market_type), lines in groups.items():
-            if not lines:
-                continue
-            sorted_lines = sorted(lines)
-            n = len(sorted_lines)
-            if n % 2 == 1:
-                consensus = sorted_lines[n // 2]
-            else:
-                consensus = (sorted_lines[n // 2 - 1] + sorted_lines[n // 2]) / 2.0
-
-            # Check if consensus already exists
-            existing = (
-                session.query(CLVClosingLine)
-                .filter(
-                    CLVClosingLine.event_id == event_id,
-                    CLVClosingLine.player == player,
-                    CLVClosingLine.market_type == market_type,
-                    CLVClosingLine.is_consensus == True,  # noqa: E712
-                )
-                .first()
-            )
-            if existing:
-                existing.closing_line = consensus
-                existing.captured_at = _utcnow()
-            else:
-                session.add(CLVClosingLine(
-                    sport=self.sport,
+                # Create closing line record
+                closing = ClosingLineRecord(
                     event_id=event_id,
-                    player=player,
-                    market_type=market_type,
-                    book="consensus",
-                    closing_line=consensus,
-                    event_start_time=event_start_time,
-                    captured_at=_utcnow(),
-                    is_consensus=True,
-                ))
-
-    # ── Match closing lines to bets ──────────────────────────────────
-
-    def match_closing_to_bets(self) -> Dict[str, Any]:
-        """Match closing lines to pending/settled bets that are missing them.
-
-        Finds bets without closing_line set and attempts to match them
-        to captured closing lines based on player, market, and event.
-
-        Returns:
-            Summary of matched bets.
-        """
-        session = self._session()
-        matched = 0
-        try:
-            # Find bets missing closing lines
-            bets = (
-                session.query(BetLog)
-                .filter(
-                    BetLog.sport == self.sport.lower(),
-                    BetLog.closing_line == None,  # noqa: E711
-                    BetLog.status.in_(["pending", "won", "lost", "push"]),
+                    player=snap.player,
+                    market_type=snap.market_type,
+                    source=snap.source,
+                    closing_odds_american=snap.odds_american,
+                    closing_odds_decimal=snap.odds_decimal,
+                    closing_implied_prob=snap.implied_prob,
+                    closing_line=snap.line,
+                    first_tee_time=first_tee_time,
+                    captured_at=datetime.utcnow(),
                 )
+                session.add(closing)
+                count += 1
+
+        logger.info("Captured %d closing lines for event %s", count, event_id)
+        return count
+
+    def update_bet_snapshots_with_closing(self, event_id: str) -> int:
+        """Update bet price snapshots with closing line data.
+
+        Should be called after capture_closing_lines.
+        Returns count of updated bet snapshots.
+        """
+        updated = 0
+        with DatabaseManager.session_scope() as session:
+            # Get all bet snapshots for this event
+            bet_snaps = (
+                session.query(BetPriceSnapshot)
+                .filter(BetPriceSnapshot.event_id == event_id)
+                .filter(BetPriceSnapshot.closing_odds_decimal.is_(None))
                 .all()
             )
 
-            for bet in bets:
-                # Find consensus closing line for this bet's player/market
+            for bet_snap in bet_snaps:
+                # Find best closing line for this player/market
                 closing = (
-                    session.query(CLVClosingLine)
+                    session.query(ClosingLineRecord)
                     .filter(
-                        CLVClosingLine.sport == self.sport,
-                        CLVClosingLine.player == bet.player,
-                        CLVClosingLine.market_type == bet.stat_type,
-                        CLVClosingLine.is_consensus == True,  # noqa: E712
+                        ClosingLineRecord.event_id == event_id,
+                        ClosingLineRecord.player == bet_snap.player,
+                        ClosingLineRecord.market_type == bet_snap.market_type,
                     )
-                    .order_by(CLVClosingLine.captured_at.desc())
+                    .order_by(ClosingLineRecord.closing_odds_decimal.desc())
                     .first()
                 )
 
                 if closing:
-                    bet.closing_line = closing.closing_line
-                    bet.closing_odds = closing.closing_odds_american
-                    matched += 1
-                    log.debug(
-                        "Matched closing line to bet %s: %.1f",
-                        bet.bet_id, closing.closing_line,
-                    )
+                    bet_snap.closing_odds_american = closing.closing_odds_american
+                    bet_snap.closing_odds_decimal = closing.closing_odds_decimal
+                    bet_snap.closing_implied_prob = closing.closing_implied_prob
+                    bet_snap.closing_line = closing.closing_line
+                    bet_snap.closing_captured_at = closing.captured_at
 
-            session.commit()
-            log.info("Matched %d closing lines to bets", matched)
+                    # Calculate CLV
+                    if bet_snap.bet_implied_prob and closing.closing_implied_prob:
+                        bet_snap.clv_cents = round(
+                            (closing.closing_implied_prob - bet_snap.bet_implied_prob) * 100, 2
+                        )
+                        bet_snap.beat_close = bet_snap.bet_implied_prob < closing.closing_implied_prob
 
-            return {"bets_matched": matched}
+                    updated += 1
 
-        except Exception:
-            session.rollback()
-            log.exception("Failed to match closing lines to bets")
-            raise
-        finally:
-            session.close()
-
-    # ── Auto-capture for Golf (first tee time based) ─────────────────
-
-    def auto_capture_golf(
-        self,
-        event_id: str,
-        first_tee_time: datetime,
-    ) -> Dict[str, Any]:
-        """Capture closing lines for a golf round at first tee time.
-
-        Args:
-            event_id: Tournament/round identifier.
-            first_tee_time: Time of first tee-off.
-
-        Returns:
-            Capture result.
-        """
-        return self.capture_closing_lines(event_id, first_tee_time)
-
-    # ── Auto-capture for NBA (tip-off based) ─────────────────────────
-
-    def auto_capture_nba(self, events: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Automatically capture closing lines for NBA events at tip-off.
-
-        Checks each event's start_time against current time.  If an event
-        has started (or is about to start within 2 minutes), capture
-        closing lines.
-
-        Args:
-            events: List of event dicts with 'event_id', 'event_name',
-                    'start_time' (ISO string or datetime).
-
-        Returns:
-            Summary of events processed.
-        """
-        now = _utcnow()
-        capture_window = timedelta(minutes=2)
-        processed = 0
-        results = []
-
-        for ev in events:
-            event_id = ev.get("event_id") or ev.get("event_name", "")
-            start_time = ev.get("start_time")
-
-            if isinstance(start_time, str):
-                try:
-                    start_time = datetime.fromisoformat(
-                        start_time.replace("Z", "+00:00")
-                    )
-                except (ValueError, TypeError):
-                    continue
-
-            if start_time is None:
-                continue
-
-            # Make timezone-aware if needed
-            if start_time.tzinfo is None:
-                start_time = start_time.replace(tzinfo=timezone.utc)
-
-            # Check if event is starting within the capture window
-            time_to_start = start_time - now
-            if timedelta(0) <= time_to_start <= capture_window:
-                result = self.capture_closing_lines(event_id, start_time)
-                results.append(result)
-                processed += 1
-            elif time_to_start < timedelta(0) and time_to_start > -capture_window:
-                # Just started — still capture
-                result = self.capture_closing_lines(event_id, start_time)
-                results.append(result)
-                processed += 1
-
-        return {
-            "events_processed": processed,
-            "results": results,
-        }
-
-    # ── Query closing lines ──────────────────────────────────────────
+        logger.info("Updated %d bet snapshots with closing lines for event %s", updated, event_id)
+        return updated
 
     def get_closing_line(
         self,
+        event_id: str,
         player: str,
         market_type: str,
-        event_id: Optional[str] = None,
-        consensus_only: bool = True,
-    ) -> Optional[float]:
-        """Get the closing line for a player/market.
-
-        Args:
-            player: Player name.
-            market_type: Market type.
-            event_id: Event filter (optional).
-            consensus_only: If True, only return consensus closing line.
-
-        Returns:
-            Closing line value or None.
-        """
-        session = self._session()
-        try:
+        source: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Get closing line for a specific player/market."""
+        with DatabaseManager.session_scope() as session:
             q = (
-                session.query(CLVClosingLine)
+                session.query(ClosingLineRecord)
                 .filter(
-                    CLVClosingLine.sport == self.sport,
-                    CLVClosingLine.player == player,
-                    CLVClosingLine.market_type == market_type,
+                    ClosingLineRecord.event_id == event_id,
+                    ClosingLineRecord.player == player,
+                    ClosingLineRecord.market_type == market_type,
                 )
             )
-            if event_id:
-                q = q.filter(CLVClosingLine.event_id == event_id)
-            if consensus_only:
-                q = q.filter(CLVClosingLine.is_consensus == True)  # noqa: E712
+            if source:
+                q = q.filter(ClosingLineRecord.source == source)
 
-            row = q.order_by(CLVClosingLine.captured_at.desc()).first()
-            return row.closing_line if row else None
-        finally:
-            session.close()
+            record = q.order_by(ClosingLineRecord.captured_at.desc()).first()
 
-    def get_all_closing_lines(
-        self, event_id: str,
-    ) -> List[Dict[str, Any]]:
-        """Get all closing lines for an event."""
-        session = self._session()
-        try:
-            rows = (
-                session.query(CLVClosingLine)
-                .filter(
-                    CLVClosingLine.sport == self.sport,
-                    CLVClosingLine.event_id == event_id,
-                )
-                .order_by(CLVClosingLine.player, CLVClosingLine.market_type)
-                .all()
-            )
-            return [r.to_dict() for r in rows]
-        finally:
-            session.close()
+            if not record:
+                return None
 
-    def closing_line_count(self) -> int:
-        """Total number of closing line records."""
-        session = self._session()
-        try:
-            return (
-                session.query(sa_func.count(CLVClosingLine.id))
-                .filter(CLVClosingLine.sport == self.sport)
-                .scalar()
-            ) or 0
-        finally:
-            session.close()
+            return {
+                "closing_odds_decimal": record.closing_odds_decimal,
+                "closing_odds_american": record.closing_odds_american,
+                "closing_implied_prob": record.closing_implied_prob,
+                "source": record.source,
+                "first_tee_time": record.first_tee_time.isoformat() if record.first_tee_time else None,
+            }

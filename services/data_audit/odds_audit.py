@@ -1,401 +1,116 @@
-"""
-services/data_audit/odds_audit.py
-==================================
-Validates odds data quality across the golf system.
-
-Checks:
-  - Are the odds we record actually available at the time we claim?
-  - Cross-reference: was the book actually offering this line at this timestamp?
-  - Check for stale odds (same line repeated for hours = likely stale cache)
-  - Check for phantom lines (odds in our system but never actually offered)
-"""
+"""Odds audit — Verify odds data quality and consistency."""
 
 from __future__ import annotations
 
-import json
 import logging
-from collections import defaultdict
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Tuple
+from datetime import datetime, timedelta
 
-from sqlalchemy import func as sa_func
+import numpy as np
 
-from quant_system.db.schema import get_engine, get_session, BetLog, LineSnapshot
-from services.clv_system.models import (
-    CLVLineMovement,
-    CLVBetSnapshot,
-    Base,
-)
+from database.connection import DatabaseManager
+from database.models import LineMovement
 
-log = logging.getLogger(__name__)
-
-# If a line doesn't change for this many hours, it's stale
-STALE_LINE_THRESHOLD_HOURS = 6
-# Maximum reasonable odds range (American)
-MAX_REASONABLE_ODDS = 500
-MIN_REASONABLE_ODDS = -1000
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+logger = logging.getLogger(__name__)
 
 
 class OddsAuditor:
-    """Validates odds data for availability, staleness, and phantom lines.
+    """Audit odds data quality."""
 
-    Produces a detailed findings dict with:
-      - availability_verified_pct: % of bet-time odds verified against line history
-      - stale_lines_count: number of stale (unchanging) line sequences detected
-      - phantom_lines_count: odds that appear in snapshots but have no line history
-      - unreasonable_odds_count: odds outside expected ranges
-      - issues: list of human-readable issue descriptions
-      - score: 0-100 composite odds quality score
-    """
-
-    def __init__(self, sport: str = "GOLF", db_path: str | None = None):
+    def __init__(self, sport: str = "golf"):
         self.sport = sport
-        self._db_path = db_path
-        engine = get_engine(db_path)
-        Base.metadata.create_all(engine)
 
-    def _session(self):
-        return get_session(self._db_path)
+    def audit(self, days: int = 7) -> dict:
+        """Run odds quality audit.
 
-    def audit(self) -> Dict[str, Any]:
-        """Run all odds quality checks and return consolidated results."""
-        availability = self._check_odds_availability()
-        staleness = self._check_stale_odds()
-        phantom = self._check_phantom_lines()
-        reasonable = self._check_odds_reasonableness()
+        Checks:
+          - Range validity (odds in reasonable range)
+          - Consistency across sources
+          - Movement plausibility (no impossible jumps)
+          - Coverage (all players have odds)
+        """
+        cutoff = datetime.utcnow() - timedelta(days=days)
 
-        all_issues: List[str] = []
-        all_issues.extend(availability.get("issues", []))
-        all_issues.extend(staleness.get("issues", []))
-        all_issues.extend(phantom.get("issues", []))
-        all_issues.extend(reasonable.get("issues", []))
+        with DatabaseManager.session_scope() as session:
+            lines = (
+                session.query(LineMovement)
+                .filter(
+                    LineMovement.sport == self.sport,
+                    LineMovement.captured_at >= cutoff,
+                )
+                .all()
+            )
 
-        avail_score = availability.get("verified_pct", 100.0)
-        stale_penalty = min(staleness.get("stale_sequences", 0) * 2, 20)
-        phantom_penalty = min(phantom.get("phantom_count", 0) * 3, 20)
-        unreasonable_penalty = min(reasonable.get("unreasonable_count", 0) * 5, 20)
+            if not lines:
+                return {"status": "no_data", "score": 0.0}
 
-        score = max(0.0, min(100.0,
-            (avail_score * 0.40)
-            + (100 - stale_penalty) * 0.25
-            + (100 - phantom_penalty) * 0.20
-            + (100 - unreasonable_penalty) * 0.15
-        ))
+            issues = []
+            n_total = len(lines)
+
+            # Range check
+            n_invalid_odds = 0
+            for lm in lines:
+                if lm.odds_decimal is not None:
+                    if lm.odds_decimal < 1.01 or lm.odds_decimal > 1000:
+                        n_invalid_odds += 1
+                if lm.line is not None:
+                    if lm.line < -50 or lm.line > 200:
+                        n_invalid_odds += 1
+
+            if n_invalid_odds > 0:
+                issues.append(f"{n_invalid_odds} odds values out of valid range")
+
+            # Implied probability check
+            n_bad_prob = 0
+            for lm in lines:
+                if lm.over_prob_implied is not None:
+                    if lm.over_prob_implied < 0 or lm.over_prob_implied > 1:
+                        n_bad_prob += 1
+
+            if n_bad_prob > 0:
+                issues.append(f"{n_bad_prob} invalid implied probabilities")
+
+            # Source diversity
+            sources = set(lm.source for lm in lines)
+            if len(sources) < 2:
+                issues.append(f"Only {len(sources)} odds source(s) — limited cross-reference ability")
+
+            # Large movement detection
+            from collections import defaultdict
+            player_lines = defaultdict(list)
+            for lm in lines:
+                key = f"{lm.player}|{lm.stat_type}"
+                player_lines[key].append((lm.captured_at, lm.line))
+
+            n_large_moves = 0
+            for key, entries in player_lines.items():
+                if len(entries) < 2:
+                    continue
+                entries.sort(key=lambda x: x[0])
+                for i in range(1, len(entries)):
+                    if entries[i][1] is not None and entries[i - 1][1] is not None:
+                        move = abs(entries[i][1] - entries[i - 1][1])
+                        if move > 5:  # Implausibly large single move
+                            n_large_moves += 1
+
+            if n_large_moves > 0:
+                issues.append(f"{n_large_moves} implausibly large line movements detected")
+
+        # Score
+        score = 100.0
+        score -= min(n_invalid_odds / max(n_total, 1) * 100, 30)
+        score -= min(n_bad_prob / max(n_total, 1) * 100, 20)
+        score -= min(n_large_moves * 2, 20)
+        if len(sources) < 2:
+            score -= 15
 
         return {
-            "score": round(score, 1),
-            "availability_verified_pct": round(avail_score, 1),
-            "bets_verified": availability.get("verified", 0),
-            "bets_unverified": availability.get("unverified", 0),
-            "bets_checked": availability.get("total_checked", 0),
-            "stale_lines_count": staleness.get("stale_sequences", 0),
-            "stale_lines_detail": staleness.get("details", []),
-            "phantom_lines_count": phantom.get("phantom_count", 0),
-            "phantom_lines_detail": phantom.get("details", []),
-            "unreasonable_odds_count": reasonable.get("unreasonable_count", 0),
-            "issues": all_issues,
+            "score": round(max(0, score), 1),
+            "n_total_lines": n_total,
+            "n_invalid_odds": n_invalid_odds,
+            "n_bad_probabilities": n_bad_prob,
+            "n_large_movements": n_large_moves,
+            "n_sources": len(sources),
+            "sources": list(sources),
+            "issues": issues,
+            "is_healthy": score >= 70,
         }
-
-    def _check_odds_availability(self) -> Dict[str, Any]:
-        """Verify that odds recorded at bet time were actually available."""
-        session = self._session()
-        try:
-            issues = []
-            snapshots = (
-                session.query(CLVBetSnapshot)
-                .filter(CLVBetSnapshot.sport == self.sport)
-                .order_by(CLVBetSnapshot.signal_timestamp.desc())
-                .limit(500)
-                .all()
-            )
-
-            if not snapshots:
-                return {
-                    "verified_pct": 100.0, "verified": 0,
-                    "unverified": 0, "total_checked": 0,
-                    "issues": ["No bet snapshots to verify"],
-                }
-
-            verified = 0
-            unverified = 0
-
-            for snap in snapshots:
-                try:
-                    lines_data = json.loads(snap.lines_json) if snap.lines_json else {}
-                except (json.JSONDecodeError, TypeError):
-                    lines_data = {}
-
-                if not lines_data:
-                    unverified += 1
-                    continue
-
-                snap_verified = False
-                window_start = snap.signal_timestamp - timedelta(minutes=20)
-                window_end = snap.signal_timestamp + timedelta(minutes=2)
-
-                for book, line_info in lines_data.items():
-                    line_val = line_info if isinstance(line_info, (int, float)) else (
-                        line_info.get("line") if isinstance(line_info, dict) else None
-                    )
-                    if line_val is None:
-                        continue
-
-                    match = (
-                        session.query(CLVLineMovement)
-                        .filter(
-                            CLVLineMovement.sport == self.sport,
-                            CLVLineMovement.player == snap.player,
-                            CLVLineMovement.market_type == snap.market_type,
-                            CLVLineMovement.book == book,
-                            CLVLineMovement.timestamp >= window_start,
-                            CLVLineMovement.timestamp <= window_end,
-                        )
-                        .first()
-                    )
-                    if match:
-                        snap_verified = True
-                        break
-
-                if snap_verified:
-                    verified += 1
-                else:
-                    unverified += 1
-
-            total = verified + unverified
-            verified_pct = (verified / total * 100) if total > 0 else 100.0
-
-            if unverified > 0:
-                issues.append(
-                    f"UNVERIFIED_ODDS: {unverified}/{total} bet-time snapshots "
-                    f"could not be cross-referenced against line movement history"
-                )
-
-            return {
-                "verified_pct": verified_pct,
-                "verified": verified,
-                "unverified": unverified,
-                "total_checked": total,
-                "issues": issues,
-            }
-        finally:
-            session.close()
-
-    def _check_stale_odds(self) -> Dict[str, Any]:
-        """Detect line sequences where the same value repeats for hours."""
-        session = self._session()
-        try:
-            issues = []
-            stale_sequences = 0
-            details: List[Dict[str, Any]] = []
-
-            combos = (
-                session.query(
-                    CLVLineMovement.player,
-                    CLVLineMovement.market_type,
-                    CLVLineMovement.book,
-                )
-                .filter(
-                    CLVLineMovement.sport == self.sport,
-                    CLVLineMovement.timestamp >= _utcnow() - timedelta(days=7),
-                )
-                .distinct()
-                .limit(200)
-                .all()
-            )
-
-            for player, market, book in combos:
-                movements = (
-                    session.query(CLVLineMovement)
-                    .filter(
-                        CLVLineMovement.sport == self.sport,
-                        CLVLineMovement.player == player,
-                        CLVLineMovement.market_type == market,
-                        CLVLineMovement.book == book,
-                        CLVLineMovement.timestamp >= _utcnow() - timedelta(days=7),
-                    )
-                    .order_by(CLVLineMovement.timestamp.asc())
-                    .all()
-                )
-
-                if len(movements) < 3:
-                    continue
-
-                run_start = movements[0]
-                run_line = movements[0].line
-
-                for i in range(1, len(movements)):
-                    if movements[i].line == run_line:
-                        duration = (movements[i].timestamp - run_start.timestamp).total_seconds()
-                        if duration >= STALE_LINE_THRESHOLD_HOURS * 3600:
-                            polls_in_run = i - movements.index(run_start) + 1
-                            if polls_in_run >= 4:
-                                stale_sequences += 1
-                                details.append({
-                                    "player": player,
-                                    "market": market,
-                                    "book": book,
-                                    "line": run_line,
-                                    "duration_hours": round(duration / 3600, 1),
-                                    "polls": polls_in_run,
-                                })
-                                run_start = movements[i]
-                                run_line = movements[i].line
-                    else:
-                        run_start = movements[i]
-                        run_line = movements[i].line
-
-            if stale_sequences > 0:
-                issues.append(
-                    f"STALE_ODDS: {stale_sequences} line sequences unchanged for "
-                    f"{STALE_LINE_THRESHOLD_HOURS}+ hours — likely stale cached data"
-                )
-
-            return {
-                "stale_sequences": stale_sequences,
-                "details": details[:20],
-                "issues": issues,
-            }
-        finally:
-            session.close()
-
-    def _check_phantom_lines(self) -> Dict[str, Any]:
-        """Detect lines that appear in bet snapshots but have no history."""
-        session = self._session()
-        try:
-            issues = []
-            phantom_count = 0
-            details: List[Dict[str, Any]] = []
-
-            snapshots = (
-                session.query(CLVBetSnapshot)
-                .filter(CLVBetSnapshot.sport == self.sport)
-                .order_by(CLVBetSnapshot.signal_timestamp.desc())
-                .limit(300)
-                .all()
-            )
-
-            for snap in snapshots:
-                try:
-                    lines_data = json.loads(snap.lines_json) if snap.lines_json else {}
-                except (json.JSONDecodeError, TypeError):
-                    continue
-
-                for book, line_info in lines_data.items():
-                    line_val = line_info if isinstance(line_info, (int, float)) else (
-                        line_info.get("line") if isinstance(line_info, dict) else None
-                    )
-                    if line_val is None:
-                        continue
-
-                    has_history = (
-                        session.query(sa_func.count(CLVLineMovement.id))
-                        .filter(
-                            CLVLineMovement.sport == self.sport,
-                            CLVLineMovement.player == snap.player,
-                            CLVLineMovement.market_type == snap.market_type,
-                            CLVLineMovement.book == book,
-                        )
-                        .scalar()
-                    ) or 0
-
-                    if has_history == 0:
-                        phantom_count += 1
-                        details.append({
-                            "bet_id": snap.bet_id,
-                            "player": snap.player,
-                            "market": snap.market_type,
-                            "book": book,
-                            "line": line_val,
-                        })
-
-            if phantom_count > 0:
-                issues.append(
-                    f"PHANTOM_LINES: {phantom_count} lines in bet snapshots have "
-                    f"no corresponding line movement history — may not have been "
-                    f"genuinely offered by the book"
-                )
-
-            return {
-                "phantom_count": phantom_count,
-                "details": details[:20],
-                "issues": issues,
-            }
-        finally:
-            session.close()
-
-    def _check_odds_reasonableness(self) -> Dict[str, Any]:
-        """Check for odds values outside reasonable ranges."""
-        session = self._session()
-        try:
-            issues = []
-
-            unreasonable = (
-                session.query(sa_func.count(CLVLineMovement.id))
-                .filter(
-                    CLVLineMovement.sport == self.sport,
-                    CLVLineMovement.odds_american.isnot(None),
-                )
-                .filter(
-                    (CLVLineMovement.odds_american > MAX_REASONABLE_ODDS)
-                    | (CLVLineMovement.odds_american < MIN_REASONABLE_ODDS)
-                    | ((CLVLineMovement.odds_american > -100)
-                       & (CLVLineMovement.odds_american < 100)
-                       & (CLVLineMovement.odds_american != 0))
-                )
-                .scalar()
-            ) or 0
-
-            bad_lines = (
-                session.query(sa_func.count(CLVLineMovement.id))
-                .filter(
-                    CLVLineMovement.sport == self.sport,
-                    CLVLineMovement.line < 0,
-                )
-                .scalar()
-            ) or 0
-
-            bad_probs = (
-                session.query(sa_func.count(CLVLineMovement.id))
-                .filter(
-                    CLVLineMovement.sport == self.sport,
-                    CLVLineMovement.implied_prob.isnot(None),
-                )
-                .filter(
-                    (CLVLineMovement.implied_prob < 0)
-                    | (CLVLineMovement.implied_prob > 1)
-                )
-                .scalar()
-            ) or 0
-
-            total_unreasonable = unreasonable + bad_lines + bad_probs
-
-            if unreasonable > 0:
-                issues.append(
-                    f"UNREASONABLE_ODDS: {unreasonable} line movements have "
-                    f"American odds outside [{MIN_REASONABLE_ODDS}, {MAX_REASONABLE_ODDS}] "
-                    f"or in the forbidden (-100, 100) range"
-                )
-            if bad_lines > 0:
-                issues.append(
-                    f"NEGATIVE_LINES: {bad_lines} line movements have "
-                    f"negative line values"
-                )
-            if bad_probs > 0:
-                issues.append(
-                    f"BAD_IMPLIED_PROBS: {bad_probs} line movements have "
-                    f"implied probability outside [0, 1]"
-                )
-
-            return {
-                "unreasonable_count": total_unreasonable,
-                "unreasonable_odds": unreasonable,
-                "negative_lines": bad_lines,
-                "bad_implied_probs": bad_probs,
-                "issues": issues,
-            }
-        finally:
-            session.close()

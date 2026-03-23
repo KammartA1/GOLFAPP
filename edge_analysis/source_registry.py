@@ -1,346 +1,197 @@
-"""
-Edge Source Registry
-=====================
-Loads all 12 edge sources, computes independence matrix, ranks by Sharpe,
-and rejects sources failing validation gates.
+"""Source registry — Load sources, compute independence, rank by Sharpe, reject correlated.
+
+Manages the portfolio of edge sources:
+  - Loads all 12 sources
+  - Computes pairwise signal correlation matrix
+  - Ranks sources by Sharpe ratio
+  - Rejects highly correlated sources to avoid double-counting
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from scipy import stats as sp_stats
 
-from edge_analysis.edge_sources import (
-    compute_correlation_matrix,
-    compute_vif,
-    build_signal_matrix,
-    get_expected_correlations,
-)
+from edge_analysis.edge_sources import EdgeSource, EdgeSourceRegistry
 
-log = logging.getLogger(__name__)
-
-# Validation gates: a source must pass ALL gates to be accepted
-_VALIDATION_GATES = {
-    "min_sample_size": 30,
-    "max_p_value": 0.15,          # lenient for individual sources
-    "min_sharpe": 0.10,
-    "max_vif": 10.0,              # multicollinearity limit
-    "min_quintile_spread": 0.01,
-}
+logger = logging.getLogger(__name__)
 
 
-class EdgeSourceRegistry:
-    """
-    Central registry for all edge sources.
+class SourcePortfolioManager:
+    """Manages the portfolio of edge sources — independence, ranking, selection."""
 
-    Loads sources, validates them, computes independence,
-    ranks by Sharpe, and provides the active source set.
-    """
-
-    def __init__(self):
-        self._sources: list = []
-        self._names: list[str] = []
-        self._validation_results: dict[str, dict] = {}
-        self._independence: dict | None = None
-        self._rankings: list[dict] | None = None
-        self._rejected: list[dict] = []
-        self._accepted: list[dict] = []
-
-    # ── Loading ──────────────────────────────────────────────────────────
-
-    def load_all(self) -> None:
-        """Instantiate all 12 edge sources."""
-        from edge_analysis.sources import ALL_SOURCES
-
-        self._sources = []
-        self._names = []
-        for cls in ALL_SOURCES:
-            try:
-                inst = cls()
-                self._sources.append(inst)
-                self._names.append(getattr(inst, "name", cls.__name__))
-            except Exception as exc:
-                log.warning("Failed to load source %s: %s", cls.__name__, exc)
-
-        log.info("Loaded %d edge sources", len(self._sources))
-
-    def get_sources(self) -> list:
-        """Return all loaded source instances."""
-        return list(self._sources)
-
-    def get_source_by_name(self, name: str):
-        """Look up a source by name."""
-        for src in self._sources:
-            if getattr(src, "name", "") == name:
-                return src
-        return None
-
-    # ── Validation ───────────────────────────────────────────────────────
-
-    def validate_all(self, historical_data: list[dict]) -> dict[str, dict]:
+    def __init__(self, max_correlation: float = 0.60, min_sharpe: float = 0.10):
         """
-        Run validate() on every source and store results.
-
-        Parameters
-        ----------
-        historical_data : list[dict]
-            Each entry has 'player', 'tournament_context', 'actual_finish'.
-
-        Returns
-        -------
-        dict mapping source name -> validation result dict
+        Args:
+            max_correlation: Maximum allowed pairwise correlation between sources.
+            min_sharpe: Minimum Sharpe ratio to keep a source active.
         """
-        self._validation_results = {}
-        for src in self._sources:
-            name = getattr(src, "name", "?")
-            try:
-                result = src.validate(historical_data)
-                self._validation_results[name] = result
-            except Exception as exc:
-                log.warning("Validation failed for %s: %s", name, exc)
-                self._validation_results[name] = {
-                    "sharpe": 0.0, "p_value": 1.0,
-                    "sample_size": 0,
-                    "correlation_with_other_signals": {},
-                    "status": "ERROR",
-                    "error": str(exc),
-                }
+        self.max_correlation = max_correlation
+        self.min_sharpe = min_sharpe
+        self.registry = EdgeSourceRegistry()
+        self.registry.register_all_defaults()
+        self._signal_history: Dict[str, List[float]] = {}
+        self._outcome_history: List[float] = []
 
-        return dict(self._validation_results)
+    def load_sources(self) -> List[EdgeSource]:
+        """Load and return all registered sources."""
+        return self.registry.all_sources()
 
-    # ── Independence ─────────────────────────────────────────────────────
+    def record_signals(
+        self,
+        signals: Dict[str, float],
+        outcome: float,
+    ) -> None:
+        """Record a set of signals and the corresponding outcome for analysis.
 
-    def compute_independence(self, observations: list[dict]) -> dict:
+        Call this after each bet settles to build the signal history.
         """
-        Compute pairwise correlation and VIF across all sources.
+        for name, value in signals.items():
+            if name not in self._signal_history:
+                self._signal_history[name] = []
+            self._signal_history[name].append(value)
+        self._outcome_history.append(outcome)
 
-        Parameters
-        ----------
-        observations : list[dict]
-            Each dict has 'player' and 'tournament_context'.
+    def compute_independence_matrix(self) -> Tuple[np.ndarray, List[str]]:
+        """Compute pairwise correlation matrix between all source signals.
 
-        Returns
-        -------
-        dict with correlation_matrix, flagged_pairs, vif_results, etc.
+        Returns:
+            (correlation_matrix, source_names)
         """
-        if not self._sources:
-            self.load_all()
+        names = sorted(self._signal_history.keys())
+        if len(names) < 2:
+            return np.eye(len(names)), names
 
-        matrix, names = build_signal_matrix(self._sources, observations)
+        # Align histories to same length
+        min_len = min(len(self._signal_history[n]) for n in names)
+        if min_len < 10:
+            logger.warning("Insufficient signal history (%d) for correlation matrix", min_len)
+            return np.eye(len(names)), names
 
-        corr_result = compute_correlation_matrix(matrix, names)
-        vif_result = compute_vif(matrix, names)
+        matrix = np.zeros((len(names), len(names)))
+        signals_matrix = np.column_stack([
+            np.array(self._signal_history[n][:min_len]) for n in names
+        ])
 
-        self._independence = {
-            **corr_result,
-            "vif_results": vif_result,
-            "signal_matrix": matrix,
-        }
+        for i in range(len(names)):
+            for j in range(len(names)):
+                if i == j:
+                    matrix[i, j] = 1.0
+                else:
+                    corr = np.corrcoef(signals_matrix[:, i], signals_matrix[:, j])[0, 1]
+                    matrix[i, j] = corr if not np.isnan(corr) else 0.0
 
-        # Cross-fill correlation info into validation results
-        for vif_entry in vif_result:
-            src_name = vif_entry["source"]
-            if src_name in self._validation_results:
-                self._validation_results[src_name]["vif"] = vif_entry["vif"]
-                self._validation_results[src_name]["vif_status"] = vif_entry["status"]
+        return matrix, names
 
-        return self._independence
+    def rank_by_sharpe(self) -> List[Tuple[str, float]]:
+        """Rank sources by their signal-to-outcome Sharpe ratio.
 
-    # ── Ranking ──────────────────────────────────────────────────────────
-
-    def rank_sources(self) -> list[dict]:
+        Sharpe = mean(signal * outcome) / std(signal * outcome)
+        Higher = more predictive and consistent.
         """
-        Rank all sources by composite score: Sharpe * independence * sample quality.
+        if not self._outcome_history:
+            return [(s.name, 0.0) for s in self.registry.all_sources()]
 
-        Returns
-        -------
-        list of dicts sorted by composite score (best first).
-        Each dict: {name, sharpe, p_value, sample_size, vif, composite, status, accepted}
-        """
+        outcomes = np.array(self._outcome_history)
         rankings = []
 
-        for src in self._sources:
-            name = getattr(src, "name", "?")
-            val = self._validation_results.get(name, {})
-
-            sharpe = val.get("sharpe", 0.0)
-            p_val = val.get("p_value", 1.0)
-            n = val.get("sample_size", 0)
-            vif = val.get("vif", 1.0)
-            spread = val.get("quintile_spread", 0.0)
-
-            # ── Gate checks ─────────────────────────────────────────────
-            gates_passed = True
-            rejection_reasons = []
-
-            if n < _VALIDATION_GATES["min_sample_size"]:
-                gates_passed = False
-                rejection_reasons.append(f"sample_size={n} < {_VALIDATION_GATES['min_sample_size']}")
-
-            if p_val > _VALIDATION_GATES["max_p_value"]:
-                gates_passed = False
-                rejection_reasons.append(f"p_value={p_val:.4f} > {_VALIDATION_GATES['max_p_value']}")
-
-            if abs(sharpe) < _VALIDATION_GATES["min_sharpe"]:
-                gates_passed = False
-                rejection_reasons.append(f"|sharpe|={abs(sharpe):.4f} < {_VALIDATION_GATES['min_sharpe']}")
-
-            if vif > _VALIDATION_GATES["max_vif"]:
-                gates_passed = False
-                rejection_reasons.append(f"vif={vif:.2f} > {_VALIDATION_GATES['max_vif']}")
-
-            # ── Composite score ─────────────────────────────────────────
-            # Higher is better.  Penalise high VIF, reward low p-value.
-            if gates_passed:
-                p_bonus = max(0.0, 1.0 - p_val)  # 0-1, higher when p is low
-                vif_penalty = max(0.0, 1.0 - (vif - 1.0) / 10.0)  # 1 at VIF=1, 0 at VIF=11
-                sample_bonus = min(1.0, n / 200.0)  # saturates at 200 samples
-                composite = abs(sharpe) * p_bonus * vif_penalty * sample_bonus
-            else:
-                composite = 0.0
-
-            entry = {
-                "name": name,
-                "category": getattr(src, "category", "unknown"),
-                "sharpe": round(sharpe, 4),
-                "p_value": round(p_val, 6),
-                "sample_size": n,
-                "quintile_spread": round(spread, 4),
-                "vif": round(vif, 2) if not np.isinf(vif) else 999.0,
-                "composite_score": round(composite, 4),
-                "status": val.get("status", "UNKNOWN"),
-                "accepted": gates_passed,
-                "rejection_reasons": rejection_reasons,
-                "mechanism": src.get_mechanism(),
-                "decay_risk": src.get_decay_risk(),
-            }
-            rankings.append(entry)
-
-        rankings.sort(key=lambda x: -x["composite_score"])
-        self._rankings = rankings
-
-        self._accepted = [r for r in rankings if r["accepted"]]
-        self._rejected = [r for r in rankings if not r["accepted"]]
-
-        return rankings
-
-    # ── Accessors ────────────────────────────────────────────────────────
-
-    def get_accepted_sources(self) -> list[dict]:
-        """Return only sources that passed all validation gates."""
-        if self._rankings is None:
-            return []
-        return list(self._accepted)
-
-    def get_rejected_sources(self) -> list[dict]:
-        """Return sources that failed validation."""
-        if self._rankings is None:
-            return []
-        return list(self._rejected)
-
-    def get_independence_report(self) -> dict | None:
-        """Return the full independence analysis."""
-        return self._independence
-
-    def get_source_detail(self, name: str) -> dict | None:
-        """Return validation + ranking detail for a single source."""
-        if self._rankings is None:
-            return None
-        for r in self._rankings:
-            if r["name"] == name:
-                return r
-        return None
-
-    def get_composite_signal(
-        self,
-        player: dict,
-        tournament_context: dict,
-        weighting: str = "sharpe",
-    ) -> dict:
-        """
-        Compute a composite edge signal from all accepted sources.
-
-        Parameters
-        ----------
-        player : dict
-        tournament_context : dict
-        weighting : str
-            "equal" — equal weight to all accepted sources
-            "sharpe" — weight by Sharpe ratio (default)
-            "composite" — weight by composite score
-
-        Returns
-        -------
-        dict with:
-            composite_signal  – float
-            source_signals    – dict mapping source name -> individual signal
-            weights           – dict mapping source name -> weight used
-        """
-        if not self._sources:
-            self.load_all()
-
-        accepted = self._accepted if self._accepted else [
-            {"name": getattr(s, "name", "?")} for s in self._sources
-        ]
-        accepted_names = {r["name"] for r in accepted}
-
-        source_signals = {}
-        raw_weights = {}
-
-        for src in self._sources:
-            name = getattr(src, "name", "?")
-            if name not in accepted_names:
+        for name, signals in self._signal_history.items():
+            n = min(len(signals), len(outcomes))
+            if n < 10:
+                rankings.append((name, 0.0))
                 continue
 
-            try:
-                sig = src.get_signal(player, tournament_context)
-            except Exception:
-                sig = 0.0
-            source_signals[name] = sig
+            sig_arr = np.array(signals[:n])
+            out_arr = outcomes[:n]
 
-            # Determine weight
-            ranking = next((r for r in (self._rankings or []) if r["name"] == name), {})
-            if weighting == "sharpe":
-                raw_weights[name] = abs(ranking.get("sharpe", 0.1))
-            elif weighting == "composite":
-                raw_weights[name] = max(ranking.get("composite_score", 0.01), 0.01)
-            else:
-                raw_weights[name] = 1.0
+            # Signal-weighted returns
+            returns = sig_arr * (out_arr - 0.5)  # Centered outcomes
+            mean_ret = float(np.mean(returns))
+            std_ret = float(np.std(returns))
 
-        # Normalise weights
-        total_w = sum(raw_weights.values())
-        if total_w < 1e-9:
-            total_w = 1.0
-        norm_weights = {k: v / total_w for k, v in raw_weights.items()}
+            sharpe = mean_ret / std_ret if std_ret > 0 else 0.0
+            rankings.append((name, round(sharpe, 4)))
 
-        composite = sum(source_signals[k] * norm_weights.get(k, 0.0) for k in source_signals)
+        rankings.sort(key=lambda x: x[1], reverse=True)
+        return rankings
 
-        return {
-            "composite_signal": round(float(composite), 4),
-            "source_signals": {k: round(v, 4) for k, v in source_signals.items()},
-            "weights": {k: round(v, 4) for k, v in norm_weights.items()},
-            "n_active_sources": len(source_signals),
-        }
+    def reject_correlated(
+        self,
+        rankings: Optional[List[Tuple[str, float]]] = None,
+    ) -> List[str]:
+        """Select independent sources by rejecting highly correlated ones.
 
-    # ── Summary ──────────────────────────────────────────────────────────
+        Greedy algorithm:
+          1. Start with highest-Sharpe source
+          2. Add next source only if correlation with all selected < threshold
+          3. Repeat until all sources checked
+
+        Returns:
+            List of selected source names (independent, high-Sharpe).
+        """
+        if rankings is None:
+            rankings = self.rank_by_sharpe()
+
+        corr_matrix, names = self.compute_independence_matrix()
+        name_to_idx = {n: i for i, n in enumerate(names)}
+
+        selected = []
+        for source_name, sharpe in rankings:
+            if sharpe < self.min_sharpe:
+                continue
+
+            if source_name not in name_to_idx:
+                selected.append(source_name)
+                continue
+
+            idx = name_to_idx[source_name]
+
+            # Check correlation with all already-selected sources
+            is_independent = True
+            for sel_name in selected:
+                if sel_name not in name_to_idx:
+                    continue
+                sel_idx = name_to_idx[sel_name]
+                if abs(corr_matrix[idx, sel_idx]) > self.max_correlation:
+                    logger.info(
+                        "Rejecting %s (corr=%.2f with %s)",
+                        source_name,
+                        corr_matrix[idx, sel_idx],
+                        sel_name,
+                    )
+                    is_independent = False
+                    break
+
+            if is_independent:
+                selected.append(source_name)
+
+        logger.info("Selected %d/%d independent sources", len(selected), len(rankings))
+        return selected
+
+    def get_active_sources(self) -> List[EdgeSource]:
+        """Get the current set of active (independent, high-Sharpe) sources."""
+        rankings = self.rank_by_sharpe()
+        active_names = self.reject_correlated(rankings)
+        return [
+            self.registry.get_source(name)
+            for name in active_names
+            if self.registry.get_source(name) is not None
+        ]
 
     def summary(self) -> dict:
-        """High-level summary of the registry state."""
+        """Summary of source portfolio status."""
+        rankings = self.rank_by_sharpe()
+        corr_matrix, names = self.compute_independence_matrix()
+        active = self.reject_correlated(rankings)
+
         return {
-            "total_sources": len(self._sources),
-            "accepted": len(self._accepted),
-            "rejected": len(self._rejected),
-            "independence_score": (
-                self._independence.get("independence_score", None)
-                if self._independence else None
-            ),
-            "n_flagged_pairs": (
-                len(self._independence.get("flagged_pairs", []))
-                if self._independence else 0
-            ),
-            "top_source": self._rankings[0]["name"] if self._rankings else None,
-            "expected_correlations": get_expected_correlations(),
+            "total_sources": len(self.registry.all_sources()),
+            "active_sources": len(active),
+            "active_names": active,
+            "rankings": rankings,
+            "n_signal_observations": len(self._outcome_history),
+            "correlation_matrix_shape": corr_matrix.shape,
+            "max_pairwise_correlation": float(np.max(np.abs(corr_matrix - np.eye(len(names))))) if len(names) > 1 else 0.0,
         }

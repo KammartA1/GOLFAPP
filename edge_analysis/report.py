@@ -1,123 +1,187 @@
-"""
-edge_analysis/report.py
-========================
-Generates the full golf edge attribution report.
+"""Full edge attribution report generator.
 
-Final verdict: "Which component is doing the heavy lifting — and which are illusions?"
+Produces a comprehensive report combining all 5 components with
+human-readable summaries, visualizable data, and actionable verdicts.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from datetime import datetime
+from typing import List, Optional
 
-from edge_analysis.decomposer import EdgeDecomposer
-from edge_analysis.schemas import EdgeReport
+import numpy as np
 
-log = logging.getLogger(__name__)
+from database.connection import DatabaseManager
+from database.models import EdgeReport as EdgeReportModel, Bet, CLVLog
+from edge_analysis.schemas import GolfBetRecord, EdgeReport
+from edge_analysis.decomposer import GolfEdgeDecomposer
+
+logger = logging.getLogger(__name__)
 
 
 class EdgeReportGenerator:
-    """Generates and persists golf edge attribution reports."""
+    """Generate and persist edge attribution reports."""
 
-    def __init__(self, sport: str = "golf", db_path: str | None = None):
-        self.sport = sport.lower()
-        self._db_path = db_path
-        self._decomposer = EdgeDecomposer(sport=sport, db_path=db_path)
+    def __init__(self, sport: str = "golf"):
+        self.sport = sport
+        self.decomposer = GolfEdgeDecomposer()
 
-    def generate(self) -> EdgeReport:
-        return self._decomposer.run()
+    def generate_report(
+        self,
+        records: Optional[List[GolfBetRecord]] = None,
+        lookback_days: int = 90,
+    ) -> EdgeReport:
+        """Generate a full edge report.
 
-    def generate_and_store(self) -> EdgeReport:
-        report = self.generate()
-        self._store_report(report)
+        If records not provided, loads from database.
+        """
+        if records is None:
+            records = self._load_records(lookback_days)
+
+        report = self.decomposer.full_decomposition(records)
+        self._persist_report(report)
         return report
 
-    def _store_report(self, report: EdgeReport) -> None:
-        try:
-            from database.models import EdgeReport as EdgeReportModel, Base
-            from database.connection import get_session
-            session = get_session()
-            try:
-                entry = EdgeReportModel(
-                    report_type="edge_decomposition",
-                    sport="GOLF",
-                    report_json=self.to_json(report),
+    def _load_records(self, lookback_days: int) -> List[GolfBetRecord]:
+        """Load settled bet records from database and convert to GolfBetRecord."""
+        from datetime import timedelta
+        cutoff = datetime.utcnow() - timedelta(days=lookback_days)
+
+        records = []
+        with DatabaseManager.session_scope() as session:
+            bets = (
+                session.query(Bet)
+                .filter(
+                    Bet.sport == self.sport,
+                    Bet.status.in_(["won", "lost"]),
+                    Bet.timestamp >= cutoff,
                 )
-                session.add(entry)
-                session.commit()
-                log.info("Golf edge decomposition report stored")
-            except Exception as exc:
-                session.rollback()
-                log.warning("Could not store report: %s", exc)
-            finally:
-                session.close()
-        except Exception as exc:
-            log.warning("DB unavailable: %s", exc)
+                .order_by(Bet.timestamp.asc())
+                .all()
+            )
 
-    def to_text(self, report: Optional[EdgeReport] = None) -> str:
-        if report is None:
-            report = self.generate()
-        return report.verdict
-
-    def to_dict(self, report: Optional[EdgeReport] = None) -> Dict[str, Any]:
-        if report is None:
-            report = self.generate()
-
-        result = {
-            "generated_at": report.generated_at.isoformat(),
-            "sport": report.sport,
-            "total_roi": report.total_roi,
-            "total_bets": report.total_bets,
-            "total_pnl": report.total_pnl,
-            "attribution": {
-                "predictive_pct": report.predictive_pct,
-                "informational_pct": report.informational_pct,
-                "market_pct": report.market_pct,
-                "execution_pct": report.execution_pct,
-                "structural_pct": report.structural_pct,
-            },
-            "scoring": {
-                "brier_score": report.brier_score,
-                "brier_baseline": report.brier_baseline,
-                "log_loss": report.log_loss,
-                "log_loss_baseline": report.log_loss_baseline,
-            },
-            "heavy_lifter": report.heavy_lifter,
-            "illusions": report.illusions,
-            "verdict": report.verdict,
-        }
-
-        for comp_name in ["predictive", "informational", "market_inefficiency", "execution", "structural"]:
-            comp = getattr(report, comp_name, None)
-            if comp:
-                result[comp_name] = {
-                    "edge_pct": comp.edge_pct_of_roi,
-                    "absolute_value": comp.absolute_value,
-                    "p_value": comp.p_value,
-                    "is_significant": comp.is_significant,
-                    "is_positive": comp.is_positive,
-                    "sample_size": comp.sample_size,
-                    "details": comp.details,
-                    "verdict": comp.verdict,
+            for bet in bets:
+                # Map bet_type to market_type
+                market_type_map = {
+                    "outright": "outright",
+                    "h2h": "matchup",
+                    "top5": "top5",
+                    "top10": "top10",
+                    "top20": "top20",
+                    "make_cut": "make_cut",
+                    "over": "make_cut",
+                    "under": "make_cut",
                 }
+                market_type = market_type_map.get(bet.bet_type, "outright")
 
-        if report.calibration_curve:
-            result["calibration_curve"] = [
-                {
-                    "bucket_lower": p.bucket_lower,
-                    "bucket_upper": p.bucket_upper,
-                    "predicted": p.predicted_avg,
-                    "actual": p.actual_rate,
-                    "n": p.n_bets,
-                    "error": p.calibration_error,
-                }
-                for p in report.calibration_curve
-            ]
+                closing_line = bet.closing_line if bet.closing_line else bet.line
+                actual_outcome = 1.0 if bet.status == "won" else 0.0
 
-        return result
+                try:
+                    features = json.loads(bet.features_snapshot) if bet.features_snapshot else {}
+                except (json.JSONDecodeError, TypeError):
+                    features = {}
 
-    def to_json(self, report: Optional[EdgeReport] = None) -> str:
-        return json.dumps(self.to_dict(report), indent=2, default=str)
+                try:
+                    record = GolfBetRecord(
+                        bet_id=bet.bet_id,
+                        tournament=bet.event_id or "unknown",
+                        player=bet.player,
+                        market_type=market_type,
+                        signal_line=bet.line,
+                        bet_line=bet.line,
+                        closing_line=closing_line,
+                        predicted_prob=bet.model_prob,
+                        actual_outcome=actual_outcome,
+                        weather_conditions=features.get("weather", "normal"),
+                        wave=features.get("wave", "unknown"),
+                        course_id=features.get("course_id", ""),
+                        bet_timestamp=bet.timestamp,
+                        odds_american=bet.odds_american,
+                        odds_decimal=bet.odds_decimal,
+                        closing_odds_american=bet.closing_odds,
+                        data_sources_available=features.get("data_sources", []),
+                        book=bet.book or "unknown",
+                        pnl=bet.pnl,
+                        stake=bet.stake,
+                    )
+                    records.append(record)
+                except (ValueError, TypeError) as e:
+                    logger.warning("Skipping bet %s: %s", bet.bet_id, e)
+
+        logger.info("Loaded %d settled bet records for edge analysis", len(records))
+        return records
+
+    def _persist_report(self, report: EdgeReport) -> None:
+        """Save report summary to database."""
+        try:
+            with DatabaseManager.session_scope() as session:
+                db_report = EdgeReportModel(
+                    sport=self.sport,
+                    report_date=report.report_date,
+                    clv_last_50=report.market.details.get("overall_clv_cents", 0.0),
+                    clv_last_100=report.market.details.get("overall_clv_cents", 0.0),
+                    clv_last_250=report.total_edge_cents,
+                    clv_last_500=report.total_edge_cents,
+                    clv_trend="improving" if report.total_edge_cents > 0 else "declining",
+                    calibration_error=report.predictive.details.get("expected_calibration_error", 0.0),
+                    calibration_buckets=json.dumps(report.predictive.details.get("calibration_curve", [])),
+                    model_roi=report.total_roi,
+                    expected_roi=report.total_roi,
+                    edge_exists=report.edge_is_real,
+                    system_state="active" if report.edge_is_real else "reduced",
+                    warnings=json.dumps(report.warnings),
+                    actions=json.dumps(report.recommendations),
+                )
+                session.add(db_report)
+            logger.info("Edge report persisted for %s", report.report_date)
+        except Exception:
+            logger.exception("Failed to persist edge report")
+
+    def format_text_report(self, report: EdgeReport) -> str:
+        """Format report as human-readable text."""
+        lines = [
+            "=" * 70,
+            f"GOLF EDGE ATTRIBUTION REPORT — {report.report_date.strftime('%Y-%m-%d %H:%M')}",
+            "=" * 70,
+            f"Bets analyzed: {report.n_bets}",
+            f"Total P&L: ${report.total_pnl:,.2f} (ROI: {report.total_roi:.2%})",
+            f"Total edge: {report.total_edge_cents:.1f} cents",
+            f"Edge is real: {report.edge_is_real} (p={report.p_value:.4f})",
+            "",
+            "COMPONENT BREAKDOWN:",
+            "-" * 40,
+        ]
+
+        for comp in report.components_list():
+            lines.append(f"  {comp.name:15s}: {comp.value:+6.1f}c  (conf={comp.confidence:.2f})")
+            lines.append(f"    {comp.verdict}")
+
+        lines.extend([
+            "",
+            "MARKET TYPE BREAKDOWN:",
+            "-" * 40,
+        ])
+        for mtype, data in report.by_market_type.items():
+            lines.append(
+                f"  {mtype:12s}: {data['n_bets']:3d} bets, "
+                f"CLV={data['avg_clv']:+5.1f}c, "
+                f"WR={data['win_rate']:.1%}, "
+                f"P&L=${data['total_pnl']:+.2f}"
+            )
+
+        if report.warnings:
+            lines.extend(["", "WARNINGS:", "-" * 40])
+            for w in report.warnings:
+                lines.append(f"  * {w}")
+
+        if report.recommendations:
+            lines.extend(["", "RECOMMENDATIONS:", "-" * 40])
+            for r in report.recommendations:
+                lines.append(f"  > {r}")
+
+        lines.extend(["", "VERDICT:", "-" * 40, f"  {report.verdict}", "=" * 70])
+
+        return "\n".join(lines)

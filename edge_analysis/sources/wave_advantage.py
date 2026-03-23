@@ -1,158 +1,177 @@
-"""
-Wave Advantage Edge Source
-===========================
-AM vs PM tee-time advantage, historically quantified per course.
-Wind typically increases in the afternoon; some courses flip.
-Track player performance by wave historically.
-Market edge: sportsbooks do not adjust lines for wave assignments.
+"""Wave Advantage Source — AM/PM tee time advantage.
+
+In golf tournaments, players are split into AM and PM waves for rounds 1-2.
+When weather conditions differ between waves (e.g., wind picks up in afternoon),
+one wave has a significant scoring advantage. This is often 1-2 strokes.
 """
 
 from __future__ import annotations
 
 import logging
-import math
+from typing import Any, Dict, List
 
 import numpy as np
-from scipy import stats as sp_stats
 
-log = logging.getLogger(__name__)
+from edge_analysis.edge_sources import EdgeSource
 
-# Historical average SG penalty for PM wave on wind-exposed courses
-# Positive = PM is harder, so AM players have an edge
-_DEFAULT_WAVE_SPLITS = {
-    "Pebble Beach":       {"am_advantage": 0.45},
-    "TPC Sawgrass":       {"am_advantage": 0.30},
-    "Royal Troon":        {"am_advantage": 0.55},
-    "St Andrews":         {"am_advantage": 0.50},
-    "Torrey Pines":       {"am_advantage": 0.25},
-    "Bay Hill":           {"am_advantage": 0.35},
-    "Harbour Town":       {"am_advantage": 0.40},
-    "Kiawah Island":      {"am_advantage": 0.50},
-    "Shinnecock Hills":   {"am_advantage": 0.45},
-    "Augusta National":   {"am_advantage": 0.15},  # sheltered, less wind differential
-    "Muirfield Village":  {"am_advantage": 0.10},
-    "TPC Scottsdale":     {"am_advantage": 0.20},
-}
+logger = logging.getLogger(__name__)
 
 
-class WaveAdvantageSource:
-    """Tee-time wave edge — AM vs PM advantage per course."""
+class WaveAdvantageSource(EdgeSource):
+    """AM/PM wave tee time advantage based on weather differential."""
 
-    name = "Wave Advantage"
-    category = "conditions"
-    version = "1.0"
+    name = "wave_advantage"
+    category = "structural"
+    description = "AM/PM wave scoring advantage from weather differential"
 
-    def __init__(self):
-        self._wave_splits = dict(_DEFAULT_WAVE_SPLITS)
+    def get_signal(self, player: str, tournament_context: Dict[str, Any]) -> float:
+        """Signal based on player's wave assignment and expected conditions.
 
-    def get_signal(self, player: dict, tournament_context: dict) -> float:
+        Positive = player is in the advantaged wave.
         """
-        Compute wave-advantage signal.
+        wave = tournament_context.get("player_wave", "unknown")  # "AM" or "PM"
+        round_num = tournament_context.get("round_num", 1)
 
-        player keys:
-            wave           – "AM" or "PM"
-            am_sg          – historical SG in AM waves (optional)
-            pm_sg          – historical SG in PM waves (optional)
-        tournament_context keys:
-            course         – venue name
-            wind_mph       – forecast wind (scales the wave effect)
-            round_number   – 1-4 (wave only matters rounds 1-2 typically)
-        """
-        wave = player.get("wave", "").upper()
-        course = tournament_context.get("course", "")
-        round_num = tournament_context.get("round_number", 1)
-        wind_mph = tournament_context.get("wind_mph", 10.0)
+        # Weather by wave
+        am_weather = tournament_context.get("am_weather", {})
+        pm_weather = tournament_context.get("pm_weather", {})
 
-        # Waves only matter in rounds 1-2 (paired tee times)
-        if round_num > 2:
+        if wave == "unknown" or not am_weather or not pm_weather:
             return 0.0
 
-        if wave not in ("AM", "PM"):
-            return 0.0
+        # Calculate scoring difficulty for each wave
+        am_difficulty = self._score_difficulty(am_weather)
+        pm_difficulty = self._score_difficulty(pm_weather)
 
-        # Course-level wave split
-        split = self._wave_splits.get(course, {})
-        am_adv = split.get("am_advantage", 0.2)  # default mild AM advantage
+        # Difficulty differential (positive = PM harder)
+        diff = pm_difficulty - am_difficulty
 
-        # Scale by wind: more wind = larger wave differential
-        wind_multiplier = min(wind_mph / 15.0, 2.0)  # cap at 2x
-        am_adv_scaled = am_adv * wind_multiplier
-
-        # Player-specific wave preference
-        player_am_sg = player.get("am_sg", 0.0)
-        player_pm_sg = player.get("pm_sg", 0.0)
-        player_wave_diff = player_am_sg - player_pm_sg  # positive = player is better AM
-
-        # Signal: combine course-level and player-level
-        if wave == "AM":
-            # AM player gets course AM advantage + personal AM skill
-            signal = am_adv_scaled * 0.5 + player_wave_diff * 0.3
+        # For rounds 1-2, players alternate waves
+        # Round 1 AM -> Round 2 PM (and vice versa)
+        if round_num == 1:
+            player_difficulty = am_difficulty if wave == "AM" else pm_difficulty
+            other_difficulty = pm_difficulty if wave == "AM" else am_difficulty
+        elif round_num == 2:
+            # Wave flips in round 2
+            player_difficulty = pm_difficulty if wave == "AM" else am_difficulty
+            other_difficulty = am_difficulty if wave == "AM" else pm_difficulty
         else:
-            # PM player suffers course disadvantage - personal PM skill offsets
-            signal = -am_adv_scaled * 0.5 - player_wave_diff * 0.3
+            return 0.0  # No wave advantage in rounds 3-4
 
-        # Forecast adjustment: if wind is forecast to be stronger in AM (rare),
-        # flip the advantage
-        am_wind = tournament_context.get("am_wind_mph", wind_mph * 0.8)
-        pm_wind = tournament_context.get("pm_wind_mph", wind_mph * 1.2)
-        if am_wind > pm_wind * 1.2:
-            signal *= -0.6  # AM is windier, partially flip
+        # Signal = advantage from being in easier wave
+        # Positive = player's wave is easier
+        advantage = other_difficulty - player_difficulty
 
-        return round(float(signal), 4)
+        # Convert to SG-scale signal
+        # 1 point of difficulty ~ 0.5 SG advantage
+        signal = advantage * 0.5
+
+        # Discount for round 2 (waves flip, partially cancels)
+        if round_num == 2:
+            signal *= 0.4  # Round 2 partially offsets round 1
+
+        # For 36-hole total, the net wave advantage is R1 + R2
+        # Since waves flip, the net depends on which day has worse weather
+        net_r1_r2 = tournament_context.get("net_wave_advantage_sg", None)
+        if net_r1_r2 is not None:
+            signal = net_r1_r2 * (1.0 if wave == "AM" else -1.0)
+
+        return round(float(np.clip(signal, -2.0, 2.0)), 4)
+
+    def _score_difficulty(self, weather: dict) -> float:
+        """Convert weather conditions to a scoring difficulty score.
+
+        0 = benign, 3+ = extremely difficult.
+        """
+        wind = weather.get("wind_speed", 10)
+        precip = weather.get("precip_chance", 0.0)
+        temp = weather.get("temperature", 75)
+
+        difficulty = 0.0
+
+        # Wind is the primary difficulty driver
+        if wind > 20:
+            difficulty += (wind - 10) * 0.12
+        elif wind > 12:
+            difficulty += (wind - 10) * 0.08
+
+        # Rain increases difficulty
+        if precip > 0.5:
+            difficulty += precip * 1.5
+        elif precip > 0.2:
+            difficulty += precip * 0.8
+
+        # Extreme temperatures
+        if temp < 50:
+            difficulty += (50 - temp) * 0.03
+        elif temp > 95:
+            difficulty += (temp - 90) * 0.02
+
+        return round(difficulty, 2)
 
     def get_mechanism(self) -> str:
         return (
-            "In rounds 1-2 of PGA Tour events, players are assigned AM or PM tee "
-            "times.  Afternoon waves typically face stronger winds (thermal "
-            "convection builds through the day), especially at coastal/links "
-            "courses.  This creates a 0.3-0.8 stroke advantage for the AM wave "
-            "at wind-exposed venues.  We quantify this per-course using historical "
-            "wave splits and also track each player's AM vs PM performance.  "
-            "Sportsbooks do not adjust odds for wave assignments — a pure edge."
+            "Wave advantage is a structural factor that markets consistently underprice. "
+            "When afternoon wind picks up 10mph, the PM wave can score 1-2 strokes worse "
+            "as a group. Outright and top-finish odds are set based on overall field "
+            "strength, not wave-adjusted projections. This creates systematic mispricing "
+            "of AM-wave players in windy forecasts."
         )
 
     def get_decay_risk(self) -> str:
         return (
-            "LOW — Wave advantages are driven by atmospheric physics (diurnal "
-            "wind patterns) which do not change.  Course-specific magnitudes are "
-            "stable year-over-year.  Risk: if PGA Tour changes to shotgun starts "
-            "(unlikely for regular events).  Edge is safe as long as books ignore waves."
+            "low — Wave advantage is inherently structural and unpriceable by most "
+            "market makers. It requires combining tee time sheets with hourly weather "
+            "forecasts, which most books do not do. This edge source is durable."
         )
 
-    def validate(self, historical_data: list[dict]) -> dict:
+    def validate(self, historical_data: List[Dict[str, Any]]) -> dict:
         if len(historical_data) < 30:
-            return {
-                "sharpe": 0.0, "p_value": 1.0,
-                "sample_size": len(historical_data),
-                "correlation_with_other_signals": {},
-                "status": "INSUFFICIENT_DATA",
-            }
+            return {"is_valid": False, "reason": "insufficient data", "n_samples": len(historical_data)}
 
-        signals, outcomes = [], []
+        am_scores = []
+        pm_scores = []
         for rec in historical_data:
-            sig = self.get_signal(rec.get("player", {}), rec.get("tournament_context", {}))
-            finish = rec.get("actual_finish", 50)
-            outcomes.append((50.0 - finish) / 50.0)
-            signals.append(sig)
+            wave = rec.get("player_wave", "unknown")
+            score = rec.get("round_score_vs_field", 0.0)
+            if wave == "AM":
+                am_scores.append(score)
+            elif wave == "PM":
+                pm_scores.append(score)
 
-        signals = np.array(signals)
-        outcomes = np.array(outcomes)
-        n = len(signals)
-        q = max(n // 5, 1)
-        idx = np.argsort(signals)
-        spread = float(np.mean(outcomes[idx[-q:]]) - np.mean(outcomes[idx[:q]]))
-        pooled = float(np.std(np.concatenate([outcomes[idx[-q:]], outcomes[idx[:q]]]), ddof=1))
-        sharpe = spread / pooled if pooled > 1e-9 else 0.0
-        corr, p_val = sp_stats.spearmanr(signals, outcomes)
-        if np.isnan(corr):
-            corr, p_val = 0.0, 1.0
+        if len(am_scores) < 10 or len(pm_scores) < 10:
+            return {"is_valid": False, "reason": "insufficient wave data", "n_samples": len(am_scores) + len(pm_scores)}
+
+        am_arr = np.array(am_scores)
+        pm_arr = np.array(pm_scores)
+
+        from scipy import stats
+        t_stat, p_val = stats.ttest_ind(am_arr, pm_arr)
+        diff = float(np.mean(am_arr) - np.mean(pm_arr))
+
+        signals = []
+        outcomes = []
+        for rec in historical_data:
+            sig = self.get_signal(rec.get("player", ""), rec)
+            signals.append(sig)
+            outcomes.append(rec.get("actual_finish_pct", 0.5))
+
+        sig_arr = np.array(signals)
+        out_arr = np.array(outcomes)
+        mask = np.abs(sig_arr) > 0.05
+        if mask.sum() >= 10:
+            returns = sig_arr[mask] * (out_arr[mask] - 0.5)
+            sharpe = float(np.mean(returns) / max(np.std(returns), 0.001))
+        else:
+            sharpe = 0.0
 
         return {
+            "is_valid": abs(diff) > 0.1 or p_val < 0.10,
             "sharpe": round(sharpe, 4),
-            "p_value": round(float(p_val), 6),
-            "sample_size": n,
-            "spearman_r": round(float(corr), 4),
-            "quintile_spread": round(spread, 4),
-            "correlation_with_other_signals": {},
-            "status": "VALID" if p_val < 0.10 and n >= 30 else "MARGINAL",
+            "hit_rate": 0.0,
+            "am_mean": round(float(np.mean(am_arr)), 4),
+            "pm_mean": round(float(np.mean(pm_arr)), 4),
+            "wave_differential": round(diff, 4),
+            "n_samples": len(am_scores) + len(pm_scores),
+            "p_value": round(float(p_val), 4),
         }

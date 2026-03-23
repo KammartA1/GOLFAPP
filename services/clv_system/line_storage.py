@@ -1,489 +1,142 @@
-"""
-services/clv_system/line_storage.py
-====================================
-Time-series storage manager for all line movements.
-
-Responsibilities:
-  - Query interface for line movement data
-  - Retention policy: keep 90 days detailed, aggregate older data hourly
-  - Opening line detection (first observed line for a player/market/event)
-  - Statistics computation (volatility, movement patterns)
-"""
+"""Time-series line movement storage and retrieval."""
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta
+from typing import List, Optional
 
-from sqlalchemy import func as sa_func, and_
+import numpy as np
 
-from quant_system.db.schema import get_engine, get_session
-from services.clv_system.models import (
-    CLVLineMovement,
-    CLVLineMovementArchive,
-    Base,
-)
+from database.connection import DatabaseManager
+from services.clv_system.models import OddsSnapshot
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-class LineStorage:
-    """Time-series storage and query engine for line movements.
-
-    Manages the clv_line_movements table with automatic retention policy
-    and provides rich query capabilities for CLV analysis.
-    """
-
-    RETENTION_DAYS = 90
-
-    def __init__(self, sport: str = "GOLF", db_path: str | None = None):
-        self.sport = sport
-        self._db_path = db_path
-        engine = get_engine(db_path)
-        Base.metadata.create_all(engine)
-
-    def _session(self):
-        return get_session(self._db_path)
-
-    # ── Query: Line history for a player/market ──────────────────────
+class LineStorageService:
+    """Time-series storage and analysis of line movements."""
 
     def get_line_history(
         self,
+        event_id: str,
         player: str,
         market_type: str,
-        hours: int = 48,
-        book: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        """Get time-series of line movements for a player/market.
+        source: Optional[str] = None,
+        hours: int = 168,
+    ) -> List[dict]:
+        """Get full line movement history for a player/market."""
+        cutoff = datetime.utcnow() - timedelta(hours=hours)
 
-        Args:
-            player: Player name.
-            market_type: Market type (e.g., "Birdies", "Fantasy Score").
-            hours: How many hours back to look.
-            book: Optional book filter.
-
-        Returns:
-            List of dicts sorted by timestamp ascending.
-        """
-        cutoff = _utcnow() - timedelta(hours=hours)
-        session = self._session()
-        try:
+        with DatabaseManager.session_scope() as session:
             q = (
-                session.query(CLVLineMovement)
+                session.query(OddsSnapshot)
                 .filter(
-                    CLVLineMovement.sport == self.sport,
-                    CLVLineMovement.player == player,
-                    CLVLineMovement.market_type == market_type,
-                    CLVLineMovement.timestamp >= cutoff,
+                    OddsSnapshot.event_id == event_id,
+                    OddsSnapshot.player == player,
+                    OddsSnapshot.market_type == market_type,
+                    OddsSnapshot.captured_at >= cutoff,
                 )
             )
-            if book:
-                q = q.filter(CLVLineMovement.book == book)
+            if source:
+                q = q.filter(OddsSnapshot.source == source)
 
-            rows = q.order_by(CLVLineMovement.timestamp.asc()).all()
-            return [r.to_dict() for r in rows]
-        finally:
-            session.close()
+            snapshots = q.order_by(OddsSnapshot.captured_at.asc()).all()
 
-    # ── Query: Opening line ──────────────────────────────────────────
+            return [
+                {
+                    "odds_decimal": s.odds_decimal,
+                    "odds_american": s.odds_american,
+                    "implied_prob": s.implied_prob,
+                    "source": s.source,
+                    "captured_at": s.captured_at.isoformat(),
+                    "is_opening": s.is_opening,
+                    "is_closing": s.is_closing,
+                }
+                for s in snapshots
+            ]
 
-    def get_opening_line(
+    def get_line_movement(
         self,
+        event_id: str,
         player: str,
         market_type: str,
-        event_id: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Get the first recorded line for a player/market (opening line).
+    ) -> dict:
+        """Compute line movement summary: opening, current, total movement."""
+        history = self.get_line_history(event_id, player, market_type)
 
-        Checks is_opening flag first, then falls back to earliest timestamp.
-        """
-        session = self._session()
-        try:
-            # Try explicit opening flag
-            q = (
-                session.query(CLVLineMovement)
-                .filter(
-                    CLVLineMovement.sport == self.sport,
-                    CLVLineMovement.player == player,
-                    CLVLineMovement.market_type == market_type,
-                    CLVLineMovement.is_opening == True,  # noqa: E712
-                )
-            )
-            if event_id:
-                q = q.filter(CLVLineMovement.event_id == event_id)
-
-            row = q.order_by(CLVLineMovement.timestamp.asc()).first()
-            if row:
-                return row.to_dict()
-
-            # Fallback: earliest observation
-            q2 = (
-                session.query(CLVLineMovement)
-                .filter(
-                    CLVLineMovement.sport == self.sport,
-                    CLVLineMovement.player == player,
-                    CLVLineMovement.market_type == market_type,
-                )
-            )
-            if event_id:
-                q2 = q2.filter(CLVLineMovement.event_id == event_id)
-
-            row2 = q2.order_by(CLVLineMovement.timestamp.asc()).first()
-            return row2.to_dict() if row2 else None
-        finally:
-            session.close()
-
-    # ── Query: Latest line across all books ───────────────────────────
-
-    def get_current_lines(
-        self, player: str, market_type: str,
-    ) -> List[Dict[str, Any]]:
-        """Get the most recent line from each book for a player/market."""
-        session = self._session()
-        try:
-            subq = (
-                session.query(
-                    CLVLineMovement.book,
-                    sa_func.max(CLVLineMovement.timestamp).label("max_ts"),
-                )
-                .filter(
-                    CLVLineMovement.sport == self.sport,
-                    CLVLineMovement.player == player,
-                    CLVLineMovement.market_type == market_type,
-                )
-                .group_by(CLVLineMovement.book)
-                .subquery()
-            )
-
-            rows = (
-                session.query(CLVLineMovement)
-                .join(
-                    subq,
-                    and_(
-                        CLVLineMovement.book == subq.c.book,
-                        CLVLineMovement.timestamp == subq.c.max_ts,
-                    ),
-                )
-                .filter(
-                    CLVLineMovement.player == player,
-                    CLVLineMovement.market_type == market_type,
-                )
-                .all()
-            )
-            return [r.to_dict() for r in rows]
-        finally:
-            session.close()
-
-    # ── Query: Consensus line ────────────────────────────────────────
-
-    def get_consensus_line(
-        self, player: str, market_type: str,
-    ) -> Optional[float]:
-        """Calculate the consensus (median) line across all books."""
-        current = self.get_current_lines(player, market_type)
-        if not current:
-            return None
-
-        lines = sorted(r["line"] for r in current if r.get("line") is not None)
-        if not lines:
-            return None
-
-        n = len(lines)
-        if n % 2 == 1:
-            return lines[n // 2]
-        return (lines[n // 2 - 1] + lines[n // 2]) / 2.0
-
-    # ── Query: Best available line ───────────────────────────────────
-
-    def get_best_line(
-        self,
-        player: str,
-        market_type: str,
-        direction: str = "over",
-    ) -> Optional[Dict[str, Any]]:
-        """Get the best available line for a direction.
-
-        For over bets: lowest line is best.
-        For under bets: highest line is best.
-        """
-        current = self.get_current_lines(player, market_type)
-        if not current:
-            return None
-
-        valid = [r for r in current if r.get("line") is not None]
-        if not valid:
-            return None
-
-        if direction.lower() == "over":
-            return min(valid, key=lambda r: r["line"])
-        else:
-            return max(valid, key=lambda r: r["line"])
-
-    # ── Line movement statistics ─────────────────────────────────────
-
-    def compute_movement_stats(
-        self, player: str, market_type: str, hours: int = 24,
-    ) -> Dict[str, Any]:
-        """Compute movement statistics for a player/market.
-
-        Returns:
-            {
-                "n_observations": int,
-                "opening_line": float,
-                "current_line": float,
-                "total_movement": float,
-                "volatility": float,
-                "direction": str,  # "up", "down", "stable"
-                "n_books": int,
-            }
-        """
-        history = self.get_line_history(player, market_type, hours=hours)
         if not history:
-            return {
-                "n_observations": 0,
-                "opening_line": None,
-                "current_line": None,
-                "total_movement": 0.0,
-                "volatility": 0.0,
-                "direction": "unknown",
-                "n_books": 0,
-            }
+            return {"has_data": False}
 
-        lines = [h["line"] for h in history if h.get("line") is not None]
-        books = set(h.get("book", "") for h in history)
+        opening = history[0]
+        current = history[-1]
 
-        if not lines:
-            return {
-                "n_observations": 0,
-                "opening_line": None,
-                "current_line": None,
-                "total_movement": 0.0,
-                "volatility": 0.0,
-                "direction": "unknown",
-                "n_books": 0,
-            }
+        opening_prob = opening.get("implied_prob", 0.5)
+        current_prob = current.get("implied_prob", 0.5)
+        movement = current_prob - opening_prob
 
-        opening = lines[0]
-        current = lines[-1]
-        total_movement = current - opening
-
-        # Volatility: std dev of line changes
-        if len(lines) > 1:
-            changes = [lines[i] - lines[i - 1] for i in range(1, len(lines))]
-            import numpy as np
-            volatility = float(np.std(changes)) if changes else 0.0
+        # Detect sharp movements (large single moves)
+        probs = [h.get("implied_prob", 0.5) for h in history if h.get("implied_prob")]
+        if len(probs) >= 2:
+            diffs = np.diff(probs)
+            max_single_move = float(np.max(np.abs(diffs)))
         else:
-            volatility = 0.0
-
-        if total_movement > 0.25:
-            direction = "up"
-        elif total_movement < -0.25:
-            direction = "down"
-        else:
-            direction = "stable"
+            max_single_move = 0.0
 
         return {
-            "n_observations": len(lines),
-            "opening_line": opening,
-            "current_line": current,
-            "total_movement": round(total_movement, 3),
-            "volatility": round(volatility, 4),
-            "direction": direction,
-            "n_books": len(books),
+            "has_data": True,
+            "opening_prob": round(opening_prob, 4),
+            "current_prob": round(current_prob, 4),
+            "total_movement": round(movement, 4),
+            "total_movement_cents": round(movement * 100, 2),
+            "n_snapshots": len(history),
+            "max_single_move": round(max_single_move, 4),
+            "direction": "shortening" if movement > 0 else "lengthening" if movement < 0 else "stable",
+            "opening_time": opening.get("captured_at"),
+            "latest_time": current.get("captured_at"),
         }
 
-    # ── Retention policy ─────────────────────────────────────────────
-
-    def run_retention_policy(self) -> Dict[str, int]:
-        """Archive detailed data older than RETENTION_DAYS into hourly aggregates.
-
-        Returns counts of archived and deleted rows.
-        """
-        cutoff = _utcnow() - timedelta(days=self.RETENTION_DAYS)
-        session = self._session()
-        archived = 0
-        deleted = 0
-
-        try:
-            # Find distinct player/market/book/hour combos older than cutoff
-            old_rows = (
-                session.query(CLVLineMovement)
-                .filter(
-                    CLVLineMovement.sport == self.sport,
-                    CLVLineMovement.timestamp < cutoff,
-                )
-                .order_by(
-                    CLVLineMovement.player,
-                    CLVLineMovement.market_type,
-                    CLVLineMovement.book,
-                    CLVLineMovement.timestamp,
-                )
-                .all()
-            )
-
-            if not old_rows:
-                return {"archived": 0, "deleted": 0}
-
-            # Group by (player, market_type, book, hour_bucket)
-            buckets: Dict[tuple, List[CLVLineMovement]] = {}
-            for row in old_rows:
-                ts = row.timestamp
-                hour_bucket = ts.replace(minute=0, second=0, microsecond=0)
-                key = (row.player, row.market_type, row.book, hour_bucket)
-                buckets.setdefault(key, []).append(row)
-
-            # Create archive records
-            for (player, market_type, book, hour_bucket), rows in buckets.items():
-                lines = [r.line for r in rows]
-                archive = CLVLineMovementArchive(
-                    sport=self.sport,
-                    event_id=rows[0].event_id,
-                    market_type=market_type,
-                    book=book,
-                    player=player,
-                    hour_bucket=hour_bucket,
-                    line_open=lines[0],
-                    line_close=lines[-1],
-                    line_high=max(lines),
-                    line_low=min(lines),
-                    n_observations=len(lines),
-                )
-                session.add(archive)
-                archived += 1
-
-            # Delete the old detailed rows
-            deleted = (
-                session.query(CLVLineMovement)
-                .filter(
-                    CLVLineMovement.sport == self.sport,
-                    CLVLineMovement.timestamp < cutoff,
-                )
-                .delete(synchronize_session="fetch")
-            )
-
-            session.commit()
-            log.info(
-                "Retention policy: archived %d hour-buckets, deleted %d rows",
-                archived, deleted,
-            )
-        except Exception:
-            session.rollback()
-            log.exception("Retention policy failed")
-            raise
-        finally:
-            session.close()
-
-        return {"archived": archived, "deleted": deleted}
-
-    # ── Mark opening lines ───────────────────────────────────────────
-
-    def mark_opening_lines(self, event_id: str) -> int:
-        """Mark the first observation for each player/market/book as opening.
-
-        Called when lines are first seen for a new event.
-        Returns count of rows marked.
-        """
-        session = self._session()
-        marked = 0
-        try:
+    def get_consensus_line(
+        self,
+        event_id: str,
+        player: str,
+        market_type: str,
+    ) -> Optional[float]:
+        """Get consensus implied probability across all sources."""
+        with DatabaseManager.session_scope() as session:
+            # Get latest from each source
+            from sqlalchemy import func
             subq = (
                 session.query(
-                    CLVLineMovement.player,
-                    CLVLineMovement.market_type,
-                    CLVLineMovement.book,
-                    sa_func.min(CLVLineMovement.timestamp).label("min_ts"),
+                    OddsSnapshot.source,
+                    func.max(OddsSnapshot.captured_at).label("max_time"),
                 )
                 .filter(
-                    CLVLineMovement.sport == self.sport,
-                    CLVLineMovement.event_id == event_id,
+                    OddsSnapshot.event_id == event_id,
+                    OddsSnapshot.player == player,
+                    OddsSnapshot.market_type == market_type,
                 )
-                .group_by(
-                    CLVLineMovement.player,
-                    CLVLineMovement.market_type,
-                    CLVLineMovement.book,
-                )
+                .group_by(OddsSnapshot.source)
                 .subquery()
             )
 
-            rows = (
-                session.query(CLVLineMovement)
-                .join(
-                    subq,
-                    and_(
-                        CLVLineMovement.player == subq.c.player,
-                        CLVLineMovement.market_type == subq.c.market_type,
-                        CLVLineMovement.book == subq.c.book,
-                        CLVLineMovement.timestamp == subq.c.min_ts,
-                    ),
+            latest = (
+                session.query(OddsSnapshot)
+                .join(subq, (OddsSnapshot.source == subq.c.source) &
+                      (OddsSnapshot.captured_at == subq.c.max_time))
+                .filter(
+                    OddsSnapshot.event_id == event_id,
+                    OddsSnapshot.player == player,
+                    OddsSnapshot.market_type == market_type,
                 )
-                .filter(CLVLineMovement.event_id == event_id)
                 .all()
             )
 
-            for row in rows:
-                if not row.is_opening:
-                    row.is_opening = True
-                    marked += 1
+            if not latest:
+                return None
 
-            session.commit()
-            log.info("Marked %d opening lines for event %s", marked, event_id)
-        except Exception:
-            session.rollback()
-            log.exception("Failed to mark opening lines")
-        finally:
-            session.close()
+            probs = [s.implied_prob for s in latest if s.implied_prob]
+            if not probs:
+                return None
 
-        return marked
-
-    # ── Table size info ──────────────────────────────────────────────
-
-    def get_table_stats(self) -> Dict[str, Any]:
-        """Return statistics about the line movements table."""
-        session = self._session()
-        try:
-            total = (
-                session.query(sa_func.count(CLVLineMovement.id))
-                .filter(CLVLineMovement.sport == self.sport)
-                .scalar()
-            )
-            oldest = (
-                session.query(sa_func.min(CLVLineMovement.timestamp))
-                .filter(CLVLineMovement.sport == self.sport)
-                .scalar()
-            )
-            newest = (
-                session.query(sa_func.max(CLVLineMovement.timestamp))
-                .filter(CLVLineMovement.sport == self.sport)
-                .scalar()
-            )
-            n_books = (
-                session.query(sa_func.count(sa_func.distinct(CLVLineMovement.book)))
-                .filter(CLVLineMovement.sport == self.sport)
-                .scalar()
-            )
-            n_players = (
-                session.query(sa_func.count(sa_func.distinct(CLVLineMovement.player)))
-                .filter(CLVLineMovement.sport == self.sport)
-                .scalar()
-            )
-            archive_count = (
-                session.query(sa_func.count(CLVLineMovementArchive.id))
-                .filter(CLVLineMovementArchive.sport == self.sport)
-                .scalar()
-            )
-
-            return {
-                "total_rows": total or 0,
-                "oldest_record": oldest.isoformat() if oldest else None,
-                "newest_record": newest.isoformat() if newest else None,
-                "n_books": n_books or 0,
-                "n_players": n_players or 0,
-                "archive_rows": archive_count or 0,
-            }
-        finally:
-            session.close()
+            return round(float(np.mean(probs)), 4)

@@ -1,280 +1,136 @@
-"""
-Golf Quant Engine — Round Engine
-==================================
-Simulates a complete 18-hole round for a player, tracking cumulative
-score, hole-by-hole outcomes, momentum, weather evolution, and fatigue.
-"""
+"""Round engine — 18-hole round simulation."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List
 
 import numpy as np
 
 from simulation.config import SimulationConfig
-from simulation.course_model import CourseModel, HoleSpec
 from simulation.hole_engine import HoleEngine
-from simulation.player_model import PlayerModel, PlayerSGComponents
-from simulation.pressure_model import PressureModel, PressureState
-from simulation.weather_model import RoundWeather, WeatherConditions, WeatherModel
-
-
-@dataclass
-class RoundResult:
-    """Complete result of simulating one round for one player."""
-    player_name: str
-    round_number: int
-    total_score: int                  # Total strokes relative to par
-    hole_scores: List[int]            # Per-hole scores relative to par
-    front_nine_score: int             # Front 9 total relative to par
-    back_nine_score: int              # Back 9 total relative to par
-    sg_components: PlayerSGComponents  # SG draw used for this round
-    birdies: int
-    pars: int
-    bogeys: int
-    eagles: int
-    doubles_plus: int
-    wave_adjustment: float = 0.0
-    pressure_applied: bool = False
-
-    @property
-    def gross_score(self) -> int:
-        """Approximate gross score (assuming par 72)."""
-        return 72 + self.total_score
-
-    def to_dict(self) -> dict:
-        return {
-            "player_name": self.player_name,
-            "round_number": self.round_number,
-            "total_score": self.total_score,
-            "front_nine": self.front_nine_score,
-            "back_nine": self.back_nine_score,
-            "birdies": self.birdies,
-            "pars": self.pars,
-            "bogeys": self.bogeys,
-            "eagles": self.eagles,
-            "doubles_plus": self.doubles_plus,
-            "sg_total": self.sg_components.sg_total,
-        }
+from simulation.player_model import SimPlayer, PlayerModel
+from simulation.course_model import CourseProfile
+from simulation.weather_model import WeatherConditions, WeatherModel
+from simulation.pressure_model import PressureModel
 
 
 class RoundEngine:
-    """Simulate a complete 18-hole round.
+    """Simulate a single 18-hole round for a player."""
 
-    Orchestrates the hole engine across all 18 holes, applying:
-    - Weather changes through the round
-    - Intra-round momentum (hot/cold streaks)
-    - Pressure adjustments based on leaderboard
-    - Fatigue on long courses in extreme conditions
-    """
-
-    def __init__(self, config: Optional[SimulationConfig] = None):
-        self.config = config or SimulationConfig()
-        self.hole_engine = HoleEngine(self.config)
-        self.pressure_model = PressureModel(self.config)
-        self.weather_model = WeatherModel(self.config)
+    def __init__(self, config: SimulationConfig, rng: np.random.Generator):
+        self.config = config
+        self.rng = rng
+        self.hole_engine = HoleEngine(config, rng)
+        self.player_model = PlayerModel(rng)
+        self.weather_model = WeatherModel()
+        self.pressure_model = PressureModel(config)
 
     def simulate_round(
         self,
-        player: PlayerModel,
-        course: CourseModel,
-        rng: np.random.Generator,
-        round_number: int = 1,
-        round_weather: Optional[RoundWeather] = None,
-        cumulative_score: float = 0.0,
-        leader_score: float = 0.0,
-        wave_adjustment: float = 0.0,
-    ) -> RoundResult:
-        """Simulate a full 18-hole round.
+        player: SimPlayer,
+        course: CourseProfile,
+        round_num: int = 1,
+        weather: WeatherConditions | None = None,
+        current_position: int = 75,
+        strokes_off_lead: float = 0.0,
+        field_size: int = 156,
+    ) -> dict:
+        """Simulate one 18-hole round for a player.
 
-        Parameters
-        ----------
-        player : PlayerModel
-            Player skill model.
-        course : CourseModel
-            Course specification.
-        rng : np.random.Generator
-            Seeded RNG.
-        round_number : int
-            Round number (1-4).
-        round_weather : RoundWeather, optional
-            Weather conditions for the round.
-        cumulative_score : float
-            Player's cumulative score entering this round (for pressure calc).
-        leader_score : float
-            Leader's cumulative score (for pressure calc).
-        wave_adjustment : float
-            Wave-based scoring adjustment (from WaveModel).
-
-        Returns
-        -------
-        RoundResult with full round details.
+        Returns:
+            {
+                "total_score": int (relative to par),
+                "gross_score": int (actual strokes),
+                "hole_scores": list of int (relative to par per hole),
+                "sg_this_round": float,
+                "birdies": int,
+                "bogeys": int,
+                "eagles": int,
+                "doubles_plus": int,
+            }
         """
-        # Draw SG components for this round
-        sg_draw = player.sample_round_sg_components(
-            rng=rng,
-            surface_bermuda=course.bermuda_greens,
+        # Generate daily form
+        daily_form = self.player_model.generate_daily_form(player)
+
+        # Weather adjustment
+        weather_adj = 0.0
+        player_weather_adj = 0.0
+        if weather:
+            weather_adj = self.weather_model.round_scoring_adjustment(weather)
+            player_weather_adj = self.weather_model.player_weather_adjustment(player, weather)
+
+        # Effective SG for this round
+        pressure_adj = self.pressure_model.pressure_adjustment(
+            player, round_num, current_position, field_size, strokes_off_lead
         )
 
-        # Calculate weather penalties per hole
-        if round_weather is not None:
-            weather_penalties = self.weather_model.calculate_round_weather_penalties(
-                round_weather=round_weather,
-                holes=course.holes,
-                course_type=course.course_type,
-            )
-        else:
-            weather_penalties = np.zeros(len(course.holes))
+        effective_sg = self.player_model.effective_sg_for_round(
+            player, daily_form, player_weather_adj, 0.0, pressure_adj
+        )
+
+        sg_per_hole = effective_sg / 18.0
 
         # Simulate each hole
-        hole_scores: list[int] = []
+        hole_scores = []
         momentum = 0.0
-        running_score = cumulative_score
+        birdies = 0
+        bogeys = 0
+        eagles = 0
+        doubles_plus = 0
 
-        for i, hole in enumerate(course.holes):
-            current_hole = i + 1
-
-            # Pressure check (primarily for rounds 3-4)
-            pressure_state = self.pressure_model.calculate_pressure_state(
-                round_number=round_number,
-                player_score=running_score,
-                leader_score=leader_score,
-                current_hole=current_hole,
-            )
-
-            # Apply pressure to SG if in contention
-            if pressure_state.in_contention and round_number >= 3:
-                effective_sg = self.pressure_model.apply_pressure(
-                    sg_components=sg_draw,
-                    player=player,
-                    pressure_state=pressure_state,
-                    rng=rng,
+        for hole in course.holes:
+            # Additional pressure on Sunday back nine
+            extra_pressure = 0.0
+            if round_num == 4:
+                extra_pressure = self.pressure_model.sunday_back_nine_pressure(
+                    player, hole.number, current_position, strokes_off_lead
                 )
-                pressure_applied = True
-            else:
-                effective_sg = sg_draw
-                pressure_applied = False
 
-            # Fatigue adjustment
-            fatigue = self._calculate_fatigue(
-                hole_number=current_hole,
-                temperature=self._get_hole_temp(round_weather, i),
-            )
+            # Per-hole weather
+            hole_weather = 0.0
+            if weather:
+                hole_weather = self.weather_model.per_hole_adjustment(
+                    weather, hole.wind_exposed
+                )
 
-            # Simulate the hole
             score = self.hole_engine.simulate_hole(
-                player_sg=effective_sg,
-                hole=hole,
-                rng=rng,
-                weather_penalty=weather_penalties[i] + fatigue,
+                hole_par=hole.par,
+                hole_difficulty=hole.difficulty + hole_weather,
+                hole_distance=hole.distance,
+                player_sg_per_hole=sg_per_hole,
+                player_volatility=player.volatility_multiplier,
+                weather_adjustment=0.0,  # Already in sg_per_hole
+                pressure_adjustment=extra_pressure,
                 momentum=momentum,
             )
 
             hole_scores.append(score)
-            running_score += score
+            momentum = float(score)  # Last hole result influences next
 
-            # Update momentum (exponential decay with latest hole)
-            momentum = (
-                momentum * (1 - self.config.intra_round_momentum)
-                + (-score) * self.config.intra_round_momentum
-            )
-            # Clamp momentum
-            momentum = np.clip(momentum, -0.15, 0.15)
+            # Count outcomes
+            if score <= -2:
+                eagles += 1
+            elif score == -1:
+                birdies += 1
+            elif score == 1:
+                bogeys += 1
+            elif score >= 2:
+                doubles_plus += 1
 
-        # Compile results
-        total = sum(hole_scores)
-        front_nine = sum(hole_scores[:9])
-        back_nine = sum(hole_scores[9:])
+        total_to_par = sum(hole_scores)
+        gross_score = course.total_par + total_to_par
 
-        return RoundResult(
-            player_name=player.name,
-            round_number=round_number,
-            total_score=total,
-            hole_scores=hole_scores,
-            front_nine_score=front_nine,
-            back_nine_score=back_nine,
-            sg_components=sg_draw,
-            birdies=sum(1 for s in hole_scores if s == -1),
-            pars=sum(1 for s in hole_scores if s == 0),
-            bogeys=sum(1 for s in hole_scores if s == 1),
-            eagles=sum(1 for s in hole_scores if s <= -2),
-            doubles_plus=sum(1 for s in hole_scores if s >= 2),
-            wave_adjustment=wave_adjustment,
-            pressure_applied=pressure_applied,
-        )
-
-    def simulate_round_fast(
-        self,
-        player: PlayerModel,
-        course: CourseModel,
-        rng: np.random.Generator,
-        round_number: int = 1,
-        weather_penalties: Optional[np.ndarray] = None,
-        cumulative_score: float = 0.0,
-        leader_score: float = 0.0,
-    ) -> int:
-        """Fast round simulation returning only total score.
-
-        Skips detailed tracking for speed in bulk simulations.
-        """
-        sg_draw = player.sample_round_sg_components(
-            rng=rng,
-            surface_bermuda=course.bermuda_greens,
-        )
-
-        if weather_penalties is None:
-            weather_penalties = np.zeros(len(course.holes))
-
-        total = 0
-        momentum = 0.0
-
-        for i, hole in enumerate(course.holes):
-            score = self.hole_engine.simulate_hole(
-                player_sg=sg_draw,
-                hole=hole,
-                rng=rng,
-                weather_penalty=weather_penalties[i],
-                momentum=momentum,
-            )
-            total += score
-            momentum = (
-                momentum * (1 - self.config.intra_round_momentum)
-                + (-score) * self.config.intra_round_momentum
-            )
-            momentum = np.clip(momentum, -0.15, 0.15)
-
-        return total
-
-    def _calculate_fatigue(
-        self,
-        hole_number: int,
-        temperature: float = 72.0,
-    ) -> float:
-        """Calculate fatigue penalty for a given hole.
-
-        Golf fatigue is minimal but non-zero, especially:
-        - In extreme heat (>95F)
-        - On hilly courses
-        - Late in the round (holes 15-18)
-        """
-        base_fatigue = hole_number * self.config.fatigue_per_hole
-
-        # Heat fatigue amplifier
-        if temperature > self.config.heat_fatigue_threshold_f:
-            heat_excess = temperature - self.config.heat_fatigue_threshold_f
-            base_fatigue *= 1.0 + heat_excess * 0.05 * self.config.heat_fatigue_multiplier
-
-        return base_fatigue
-
-    def _get_hole_temp(
-        self,
-        round_weather: Optional[RoundWeather],
-        hole_index: int,
-    ) -> float:
-        """Get temperature for a specific hole from weather data."""
-        if round_weather is None:
-            return 72.0
-        if hole_index < len(round_weather.hole_conditions):
-            return round_weather.hole_conditions[hole_index].temperature_f
-        return round_weather.base_conditions.temperature_f
+        return {
+            "total_score": total_to_par,
+            "gross_score": gross_score,
+            "hole_scores": hole_scores,
+            "sg_this_round": round(effective_sg, 3),
+            "daily_form": round(daily_form, 3),
+            "birdies": birdies,
+            "bogeys": bogeys,
+            "eagles": eagles,
+            "doubles_plus": doubles_plus,
+            "pars": 18 - birdies - bogeys - eagles - doubles_plus,
+            "weather_adjustment": round(weather_adj, 3),
+            "pressure_adjustment": round(pressure_adj, 3),
+        }

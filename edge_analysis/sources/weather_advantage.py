@@ -1,158 +1,130 @@
-"""
-Weather Advantage Edge Source
-==============================
-Player-specific weather skill ratings: wind, rain, temperature.
-Market edge: sportsbooks adjust lines generically for weather; we have
-per-player historical performance splits under different conditions.
+"""Weather Advantage Source — Wind skill, rain performance differential.
+
+Some players perform significantly better in adverse weather.
+This source captures:
+  - Wind skill: performance differential in high-wind rounds
+  - Rain performance: scoring relative to field in wet conditions
+  - Temperature effects: cold/hot weather adaptability
 """
 
 from __future__ import annotations
 
 import logging
-import math
+from typing import Any, Dict, List
 
 import numpy as np
-from scipy import stats as sp_stats
 
-log = logging.getLogger(__name__)
+from edge_analysis.edge_sources import EdgeSource
 
-# Beaufort-like wind buckets (mph)
-_WIND_CALM = 8.0
-_WIND_MODERATE = 15.0
-_WIND_STRONG = 22.0
+logger = logging.getLogger(__name__)
 
 
-class WeatherAdvantageSource:
-    """Player-specific weather-skill edge."""
+class WeatherAdvantageSource(EdgeSource):
+    """Identify players with weather-related performance advantages."""
 
-    name = "Weather Advantage"
-    category = "conditions"
-    version = "1.0"
+    name = "weather_advantage"
+    category = "informational"
+    description = "Wind skill, rain performance differential, temperature adaptability"
 
-    def get_signal(self, player: dict, tournament_context: dict) -> float:
+    def get_signal(self, player: str, tournament_context: Dict[str, Any]) -> float:
+        """Signal based on player's weather skill vs forecast conditions.
+
+        Positive = player has advantage in forecasted conditions.
         """
-        Compute weather edge for a player given forecast conditions.
+        weather = tournament_context.get("weather", {})
+        player_weather_stats = tournament_context.get("player_weather_stats", {})
 
-        player keys:
-            wind_sg       – SG differential in high-wind (>15 mph) rounds
-            rain_sg       – SG differential in rain rounds
-            cold_sg       – SG differential in cold (<55F) rounds
-            hot_sg        – SG differential in hot (>90F) rounds
-            sg_total      – baseline total SG
-        tournament_context keys:
-            wind_mph      – forecast avg wind speed
-            rain_prob     – probability of rain (0-1)
-            temperature_f – forecast temperature (Fahrenheit)
-        """
-        wind_mph = tournament_context.get("wind_mph", 10.0)
-        rain_prob = tournament_context.get("rain_prob", 0.0)
-        temp_f = tournament_context.get("temperature_f", 72.0)
+        wind_speed = weather.get("wind_speed", 10)  # mph
+        precip_chance = weather.get("precip_chance", 0.1)
+        temp = weather.get("temperature", 75)  # Fahrenheit
 
-        # ── Wind component ──────────────────────────────────────────────
-        wind_sg = player.get("wind_sg", 0.0)
-        if wind_mph >= _WIND_STRONG:
-            wind_edge = wind_sg * 1.0
-        elif wind_mph >= _WIND_MODERATE:
-            frac = (wind_mph - _WIND_MODERATE) / (_WIND_STRONG - _WIND_MODERATE)
-            wind_edge = wind_sg * (0.5 + 0.5 * frac)
-        elif wind_mph >= _WIND_CALM:
-            frac = (wind_mph - _WIND_CALM) / (_WIND_MODERATE - _WIND_CALM)
-            wind_edge = wind_sg * (0.1 + 0.4 * frac)
-        else:
-            wind_edge = 0.0  # calm, no wind advantage
+        # Player's weather-specific performance
+        wind_sg_diff = player_weather_stats.get("wind_sg_differential", 0.0)
+        rain_sg_diff = player_weather_stats.get("rain_sg_differential", 0.0)
+        cold_sg_diff = player_weather_stats.get("cold_sg_differential", 0.0)
 
-        # ── Rain component ──────────────────────────────────────────────
-        rain_sg = player.get("rain_sg", 0.0)
-        # Scale by rain probability and severity
-        rain_edge = rain_sg * rain_prob
+        signal = 0.0
 
-        # ── Temperature component ───────────────────────────────────────
-        cold_sg = player.get("cold_sg", 0.0)
-        hot_sg = player.get("hot_sg", 0.0)
-        if temp_f < 50:
-            temp_edge = cold_sg * min((55 - temp_f) / 20.0, 1.0)
-        elif temp_f > 90:
-            temp_edge = hot_sg * min((temp_f - 88) / 15.0, 1.0)
-        else:
-            temp_edge = 0.0
+        # Wind advantage: significant above 15 mph
+        if wind_speed > 15:
+            wind_factor = min((wind_speed - 15) / 10.0, 1.0)  # 0-1 scale
+            signal += wind_sg_diff * wind_factor * 1.5
+        elif wind_speed > 10:
+            wind_factor = (wind_speed - 10) / 10.0
+            signal += wind_sg_diff * wind_factor * 0.5
 
-        # ── Ball flight physics: cold = less carry, thin air ────────────
-        # Standard: ball loses ~2 yards per 10F drop below 70F
-        # This affects distance-dependent players more
-        sg_ott = player.get("sg_ott", 0.0)
-        distance_temp_adj = 0.0
-        if temp_f < 60 and sg_ott > 0.3:
-            # Long hitters lose proportionally less (technique > carry)
-            distance_temp_adj = -0.02 * (60 - temp_f) / 10.0
-        elif temp_f > 95 and sg_ott > 0.3:
-            # Hot = ball flies further, long hitters benefit
-            distance_temp_adj = 0.01 * (temp_f - 90) / 10.0
+        # Rain advantage
+        if precip_chance > 0.4:
+            rain_factor = min((precip_chance - 0.4) / 0.4, 1.0)
+            signal += rain_sg_diff * rain_factor * 1.2
 
-        # ── Humidity spin factor ────────────────────────────────────────
-        humidity = tournament_context.get("humidity_pct", 50.0)
-        # High humidity = less spin = approach advantage for low-spin players
-        humidity_adj = 0.0
-        if humidity > 80:
-            spin_control = player.get("low_spin_skill", 0.0)
-            humidity_adj = spin_control * 0.05 * (humidity - 80) / 20.0
+        # Temperature: some players struggle in cold/hot
+        if temp < 55:
+            cold_factor = min((55 - temp) / 20.0, 1.0)
+            signal += cold_sg_diff * cold_factor * 0.8
+        elif temp > 95:
+            heat_factor = min((temp - 95) / 15.0, 1.0)
+            # Most players suffer in extreme heat; any advantage is valuable
+            heat_diff = player_weather_stats.get("heat_sg_differential", 0.0)
+            signal += heat_diff * heat_factor * 0.8
 
-        total_edge = wind_edge + rain_edge + temp_edge + distance_temp_adj + humidity_adj
+        # Calm conditions: weather advantage sources provide no edge
+        if wind_speed < 8 and precip_chance < 0.15 and 60 < temp < 90:
+            signal *= 0.2  # Heavily discount in benign weather
 
-        return round(float(total_edge), 4)
+        return round(float(np.clip(signal, -2.5, 2.5)), 4)
 
     def get_mechanism(self) -> str:
         return (
-            "Each player has a unique weather skill profile built from historical "
-            "round-level SG splits in high-wind (>15 mph), rain, cold (<55F), and "
-            "hot (>90F) conditions.  We also model ball-flight physics: cold air "
-            "reduces carry distance, high humidity reduces spin.  Sportsbooks "
-            "adjust lines generically ('windy = harder') but do not capture "
-            "player-specific weather skill, which can be worth 0.5-1.5 strokes "
-            "per round in extreme conditions."
+            "Markets price players based on average performance but underweight "
+            "weather-specific skill differences. A player who gains +0.5 SG in wind "
+            "vs calm is systematically undervalued when wind forecasts show 20mph. "
+            "Weather forecasts are public but their player-specific impact is not "
+            "immediately reflected in lines, creating a timing advantage."
         )
 
     def get_decay_risk(self) -> str:
         return (
-            "MEDIUM — Player weather skills are relatively stable (technique-based) "
-            "but can shift with equipment changes or ageing.  Re-estimate weather "
-            "splits every 6 months.  Risk: if DraftKings starts publishing "
-            "player-weather data publicly, the edge compresses."
+            "medium — Weather forecasts are publicly available, but the player-specific "
+            "impact modeling requires historical round-level weather data that most "
+            "bettors do not have. Risk increases as weather-adjusted models become "
+            "more common in commercial products."
         )
 
-    def validate(self, historical_data: list[dict]) -> dict:
-        if len(historical_data) < 30:
-            return {
-                "sharpe": 0.0, "p_value": 1.0,
-                "sample_size": len(historical_data),
-                "correlation_with_other_signals": {},
-                "status": "INSUFFICIENT_DATA",
-            }
+    def validate(self, historical_data: List[Dict[str, Any]]) -> dict:
+        if len(historical_data) < 20:
+            return {"is_valid": False, "reason": "insufficient data", "n_samples": len(historical_data)}
 
-        signals, outcomes = [], []
+        signals = []
+        outcomes = []
         for rec in historical_data:
-            sig = self.get_signal(rec.get("player", {}), rec.get("tournament_context", {}))
-            finish = rec.get("actual_finish", 50)
-            outcomes.append((50.0 - finish) / 50.0)
+            sig = self.get_signal(rec.get("player", ""), rec)
             signals.append(sig)
+            outcomes.append(rec.get("actual_finish_pct", 0.5))
 
-        signals = np.array(signals)
-        outcomes = np.array(outcomes)
-        n = len(signals)
-        q = max(n // 5, 1)
-        idx = np.argsort(signals)
-        spread = float(np.mean(outcomes[idx[-q:]]) - np.mean(outcomes[idx[:q]]))
-        pooled = float(np.std(np.concatenate([outcomes[idx[-q:]], outcomes[idx[:q]]]), ddof=1))
-        sharpe = spread / pooled if pooled > 1e-9 else 0.0
-        corr, p_val = sp_stats.spearmanr(signals, outcomes)
-        if np.isnan(corr):
-            corr, p_val = 0.0, 1.0
+        sig_arr = np.array(signals)
+        out_arr = np.array(outcomes)
+
+        # Only validate on weather rounds (signal != 0)
+        mask = np.abs(sig_arr) > 0.1
+        if mask.sum() < 10:
+            return {"is_valid": False, "reason": "insufficient weather rounds", "n_samples": int(mask.sum())}
+
+        sig_weather = sig_arr[mask]
+        out_weather = out_arr[mask]
+        corr = float(np.corrcoef(sig_weather, out_weather)[0, 1]) if len(sig_weather) > 2 else 0.0
+        returns = sig_weather * (out_weather - 0.5)
+        sharpe = float(np.mean(returns) / max(np.std(returns), 0.001))
+        hit_rate = float(np.mean((sig_weather > 0) == (out_weather > 0.5)))
+
+        from scipy import stats
+        _, p_val = stats.pearsonr(sig_weather, out_weather) if len(sig_weather) >= 10 else (0, 1.0)
 
         return {
+            "is_valid": corr > 0.05,
             "sharpe": round(sharpe, 4),
-            "p_value": round(float(p_val), 6),
-            "sample_size": n,
-            "spearman_r": round(float(corr), 4),
-            "quintile_spread": round(spread, 4),
-            "correlation_with_other_signals": {},
-            "status": "VALID" if p_val < 0.10 and n >= 30 else "MARGINAL",
+            "hit_rate": round(hit_rate, 4),
+            "correlation": round(corr, 4),
+            "n_samples": int(mask.sum()),
+            "p_value": round(float(p_val), 4),
         }

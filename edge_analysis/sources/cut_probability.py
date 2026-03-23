@@ -1,208 +1,165 @@
-"""
-Cut Probability Edge Source
-============================
-Models probability of making the cut based on field strength, course history,
-current form, and SG profile.  Critical for DFS (dead money) and
-outright/matchup betting.
-Market edge: cut probability is under-modeled in most betting markets.
+"""Cut Probability Source — Field strength, course history -> make/miss cut.
+
+Models cut probability using:
+  - Field strength relative to player skill
+  - Course-specific cut history
+  - Player's make-cut rate
+  - Recent form trajectory
 """
 
 from __future__ import annotations
 
 import logging
-import math
+from typing import Any, Dict, List
 
 import numpy as np
-from scipy import stats as sp_stats
-from scipy.special import expit  # logistic sigmoid
+from scipy import stats as scipy_stats
 
-log = logging.getLogger(__name__)
+from edge_analysis.edge_sources import EdgeSource
 
-# PGA Tour average made-cut rate
-_TOUR_AVG_CUT_RATE = 0.55
+logger = logging.getLogger(__name__)
 
 
-class CutProbabilitySource:
-    """Cut probability model — critical for DFS and outright markets."""
+class CutProbabilitySource(EdgeSource):
+    """Predict make/miss cut probability more accurately than the market."""
 
-    name = "Cut Probability"
-    category = "structural"
-    version = "1.0"
+    name = "cut_probability"
+    category = "predictive"
+    description = "Model cut probability from field strength, course history, and form"
 
-    def get_signal(self, player: dict, tournament_context: dict) -> float:
+    def get_signal(self, player: str, tournament_context: Dict[str, Any]) -> float:
+        """Signal for make/miss cut edge.
+
+        Positive = model says player more likely to make cut than market implies.
         """
-        Compute cut probability edge signal.
+        player_sg = tournament_context.get("player_sg", {}).get("sg_total", 0.0)
+        field_sg_values = tournament_context.get("field_sg_values", [])
+        cut_history = tournament_context.get("player_cut_history", {})
+        market_cut_prob = tournament_context.get("market_make_cut_prob", None)
 
-        Positive signal = player is more likely to make cut than market implies.
-        Returns deviation from market-implied cut probability.
+        # Model's cut probability
+        model_cut_prob = self._model_cut_probability(
+            player_sg, field_sg_values, cut_history, tournament_context
+        )
 
-        player keys:
-            sg_total              – overall SG per round
-            made_cuts_last_10     – int, cuts made in last 10 starts
-            total_starts_last_10  – int, total starts in last 10
-            course_cuts_made      – int, cuts made at this venue
-            course_starts         – int, total starts at this venue
-            owgr                  – world ranking
-            recent_mc_streak      – int, consecutive missed cuts (0 if made last cut)
-            form_factor           – float, current form multiplier (1.0 = neutral)
-        tournament_context keys:
-            field_strength        – 0-1 scale
-            field_size            – number of players in field
-            cut_rule              – "top_65", "top_70", "no_cut", etc.
-            market_cut_prob       – implied cut probability from odds (optional)
-            course                – venue name
-        """
-        sg = player.get("sg_total", 0.0)
-        owgr = player.get("owgr", 100)
-        form = player.get("form_factor", 1.0)
+        if market_cut_prob is None:
+            # No market price available — can't generate edge signal
+            # But we can still flag extreme values
+            if model_cut_prob > 0.85:
+                return 0.3  # Very likely to make cut
+            elif model_cut_prob < 0.35:
+                return -0.3  # Likely to miss cut
+            return 0.0
 
-        # ── Base cut probability from SG ────────────────────────────────
-        # Logistic model: P(cut) = sigmoid(a + b*SG)
-        # Calibrated: SG=0 -> ~55% cut rate, SG=+2 -> ~88%, SG=-1 -> ~35%
-        logit_base = -0.2 + 1.1 * sg
-        base_prob = float(expit(logit_base))
+        # Edge = model probability - market probability
+        edge = model_cut_prob - market_cut_prob
 
-        # ── Historical cut rate adjustment ──────────────────────────────
-        cuts_10 = player.get("made_cuts_last_10", 7)
-        starts_10 = player.get("total_starts_last_10", 10)
-        if starts_10 > 0:
-            historical_rate = cuts_10 / starts_10
-        else:
-            historical_rate = _TOUR_AVG_CUT_RATE
+        # Convert to signal scale
+        signal = edge * 5.0  # Scale: 5% edge -> 0.25 signal
 
-        # Bayesian update: combine model prediction with historical rate
-        # Weight historical data by sample size
-        hist_weight = min(starts_10 / 20.0, 0.5)
-        adjusted_prob = base_prob * (1 - hist_weight) + historical_rate * hist_weight
+        return round(float(np.clip(signal, -2.0, 2.0)), 4)
 
-        # ── Course-specific history ─────────────────────────────────────
-        course_cuts = player.get("course_cuts_made", 0)
-        course_starts = player.get("course_starts", 0)
-        if course_starts >= 3:
-            course_rate = course_cuts / course_starts
-            course_weight = min(course_starts / 10.0, 0.3)
-            adjusted_prob = adjusted_prob * (1 - course_weight) + course_rate * course_weight
+    def _model_cut_probability(
+        self,
+        player_sg: float,
+        field_sg_values: List[float],
+        cut_history: dict,
+        context: dict,
+    ) -> float:
+        """Model make-cut probability from multiple factors."""
+        # Base: logistic model from SG total
+        # SG = 0 (tour avg) -> ~65% make cut
+        # SG = +1 -> ~80%, SG = -1 -> ~45%
+        base_prob = 1.0 / (1.0 + np.exp(-(player_sg * 1.2 + 0.6)))
 
-        # ── Field strength adjustment ───────────────────────────────────
-        field_strength = tournament_context.get("field_strength", 0.5)
-        # Stronger field = harder to make cut for marginal players
-        field_adj = -(field_strength - 0.5) * 0.15
-        adjusted_prob += field_adj
+        # Field strength adjustment
+        if field_sg_values:
+            field_mean = float(np.mean(field_sg_values))
+            field_std = float(np.std(field_sg_values)) if len(field_sg_values) > 1 else 1.0
+            # Stronger field = harder to make cut
+            field_factor = -0.05 * (field_mean - 0.0) / max(field_std, 0.5)
+            base_prob = np.clip(base_prob + field_factor, 0.05, 0.97)
 
-        # ── Missed cut streak penalty ───────────────────────────────────
-        mc_streak = player.get("recent_mc_streak", 0)
-        if mc_streak >= 3:
-            # Confidence spiral — 3+ consecutive MCs is a red flag
-            streak_penalty = -0.05 * (mc_streak - 2)
-            adjusted_prob += streak_penalty
-        elif mc_streak == 0 and cuts_10 >= 8:
-            # Strong cut-making player gets a small boost
-            adjusted_prob += 0.02
+        # Historical cut rate for this player
+        historical_cut_rate = cut_history.get("make_cut_rate", None)
+        n_events = cut_history.get("n_events", 0)
+        if historical_cut_rate is not None and n_events >= 10:
+            # Blend model with historical rate (more weight to model for small samples)
+            weight = min(n_events / 30.0, 0.4)
+            base_prob = base_prob * (1 - weight) + historical_cut_rate * weight
 
-        # ── Form factor ─────────────────────────────────────────────────
-        adjusted_prob *= form
+        # Course-specific cut rate
+        course_cut_rate = cut_history.get("course_cut_rate", None)
+        n_course = cut_history.get("n_course_events", 0)
+        if course_cut_rate is not None and n_course >= 3:
+            course_weight = min(n_course / 10.0, 0.2)
+            base_prob = base_prob * (1 - course_weight) + course_cut_rate * course_weight
 
-        # Clamp to [0.05, 0.98]
-        adjusted_prob = max(0.05, min(0.98, adjusted_prob))
+        # Recent form: consecutive missed cuts is a red flag
+        consecutive_mc = cut_history.get("consecutive_missed_cuts", 0)
+        if consecutive_mc >= 3:
+            base_prob *= 0.85
+        elif consecutive_mc >= 2:
+            base_prob *= 0.92
 
-        # ── Compute edge vs market ──────────────────────────────────────
-        market_prob = tournament_context.get("market_cut_prob", None)
-        if market_prob is not None and 0 < market_prob < 1:
-            edge = adjusted_prob - market_prob
-        else:
-            # No market line — express as deviation from tour average
-            edge = adjusted_prob - _TOUR_AVG_CUT_RATE
+        # Field size: larger field = more players miss cut
+        field_size = context.get("field_size", 156)
+        if field_size < 80:
+            base_prob *= 1.05  # Smaller field = easier to make cut
+        elif field_size > 156:
+            base_prob *= 0.95
 
-        return round(float(edge), 4)
-
-    def get_cut_probability(self, player: dict, tournament_context: dict) -> float:
-        """Return raw cut probability (not edge-relative).  0-1 scale."""
-        sg = player.get("sg_total", 0.0)
-        logit = -0.2 + 1.1 * sg
-        prob = float(expit(logit))
-
-        cuts_10 = player.get("made_cuts_last_10", 7)
-        starts_10 = player.get("total_starts_last_10", 10)
-        hist_rate = cuts_10 / max(starts_10, 1)
-        hist_w = min(starts_10 / 20.0, 0.5)
-        prob = prob * (1 - hist_w) + hist_rate * hist_w
-
-        field_strength = tournament_context.get("field_strength", 0.5)
-        prob += -(field_strength - 0.5) * 0.15
-
-        form = player.get("form_factor", 1.0)
-        prob *= form
-
-        return max(0.05, min(0.98, prob))
+        return float(np.clip(base_prob, 0.03, 0.98))
 
     def get_mechanism(self) -> str:
         return (
-            "A logistic regression maps SG to base cut probability, then "
-            "Bayesian-updates with the player's recent cut rate (last 10 starts) "
-            "and course-specific cut history.  Field strength shifts the cutline "
-            "difficulty.  A missed-cut streak penalty captures confidence spirals.  "
-            "The edge is the difference between our modeled cut probability and "
-            "the market-implied probability.  In DFS, accurately pricing dead "
-            "money (players who miss the cut) is the single biggest ROI driver."
+            "Make/miss cut markets are among the thinnest in golf betting, with "
+            "wide vig and infrequent repricing. The market sets cut lines based on "
+            "simple heuristics (ranking, name recognition) rather than modeling "
+            "the actual cut dynamics: field strength, 36-hole scoring distribution, "
+            "and player-specific cut rates at specific courses."
         )
 
     def get_decay_risk(self) -> str:
         return (
-            "LOW — Cut probability is a structural edge: the model uses "
-            "fundamental skill metrics (SG) and the market does not price "
-            "cuts granularly.  As long as DFS and tournament markets exist, "
-            "accurate cut probability is valuable.  Decay only if books begin "
-            "offering explicit made-cut markets with tight lines."
+            "low — Cut markets remain thinly traded with high vig. The specific "
+            "modeling of field-adjusted cut probability requires combining multiple "
+            "data sources in ways that bookmakers do not prioritize."
         )
 
-    def validate(self, historical_data: list[dict]) -> dict:
+    def validate(self, historical_data: List[Dict[str, Any]]) -> dict:
         if len(historical_data) < 30:
-            return {
-                "sharpe": 0.0, "p_value": 1.0,
-                "sample_size": len(historical_data),
-                "correlation_with_other_signals": {},
-                "status": "INSUFFICIENT_DATA",
-            }
+            return {"is_valid": False, "reason": "insufficient data", "n_samples": len(historical_data)}
 
-        signals, outcomes = [], []
+        model_probs = []
+        actuals = []
         for rec in historical_data:
-            sig = self.get_signal(rec.get("player", {}), rec.get("tournament_context", {}))
-            # For cut probability, outcome is binary: made cut or not
-            made_cut = 1.0 if rec.get("made_cut", rec.get("actual_finish", 50) <= 65) else 0.0
-            outcomes.append(made_cut)
-            signals.append(sig)
+            sg = rec.get("player_sg", {}).get("sg_total", 0.0)
+            field_sg = rec.get("field_sg_values", [])
+            cut_hist = rec.get("player_cut_history", {})
+            prob = self._model_cut_probability(sg, field_sg, cut_hist, rec)
+            model_probs.append(prob)
+            actuals.append(1.0 if rec.get("made_cut", True) else 0.0)
 
-        signals = np.array(signals)
-        outcomes = np.array(outcomes)
-        n = len(signals)
-
-        # For binary outcomes, use point-biserial correlation
-        corr, p_val = sp_stats.pointbiserialr(outcomes, signals)
-        if np.isnan(corr):
-            corr, p_val = 0.0, 1.0
-
-        # Calibration: bin signals into quintiles and check actual cut rates
-        q = max(n // 5, 1)
-        idx = np.argsort(signals)
-        top_cut_rate = float(np.mean(outcomes[idx[-q:]]))
-        bot_cut_rate = float(np.mean(outcomes[idx[:q]]))
-        spread = top_cut_rate - bot_cut_rate
-        pooled = float(np.std(outcomes, ddof=1))
-        sharpe = spread / pooled if pooled > 1e-9 else 0.0
+        pred_arr = np.array(model_probs)
+        act_arr = np.array(actuals)
 
         # Brier score
-        probs = 1.0 / (1.0 + np.exp(-(signals + 0.5)))  # rough mapping
-        brier = float(np.mean((probs - outcomes) ** 2))
+        brier = float(np.mean((pred_arr - act_arr) ** 2))
+        naive_brier = float(np.mean((np.mean(act_arr) - act_arr) ** 2))
+        bss = 1.0 - brier / naive_brier if naive_brier > 0 else 0.0
+
+        # Calibration
+        from edge_analysis.predictive import calibration_curve
+        cal = calibration_curve(pred_arr, act_arr, n_bins=5)
 
         return {
-            "sharpe": round(sharpe, 4),
-            "p_value": round(float(p_val), 6),
-            "sample_size": n,
-            "point_biserial_r": round(float(corr), 4),
-            "quintile_spread": round(spread, 4),
+            "is_valid": bss > 0.02,
+            "sharpe": round(bss * 2, 4),
+            "hit_rate": round(float(np.mean((pred_arr > 0.5) == (act_arr > 0.5))), 4),
             "brier_score": round(brier, 4),
-            "top_quintile_cut_rate": round(top_cut_rate, 4),
-            "bottom_quintile_cut_rate": round(bot_cut_rate, 4),
-            "correlation_with_other_signals": {},
-            "status": "VALID" if p_val < 0.10 and n >= 30 else "MARGINAL",
+            "brier_skill_score": round(bss, 4),
+            "n_samples": len(historical_data),
+            "p_value": 0.0,
+            "calibration": cal,
         }

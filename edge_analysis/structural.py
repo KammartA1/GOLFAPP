@@ -1,330 +1,250 @@
-"""
-edge_analysis/structural.py
-==============================
-Component 5: STRUCTURAL EDGE — Golf portfolio construction analysis.
+"""Structural edge component — Field correlation and wave advantage.
 
-Golf-specific structural factors:
-  - Field-level diversification: spreading bets across field positions
-  - Wave advantage correlation: AM/PM wave bets may be correlated
-  - Tournament-to-tournament independence
-  - Outright portfolio construction (top-heavy vs spread)
-  - Kelly criterion adherence in high-variance golf markets
+Golf-specific structural factors that create betting edge:
+  - Bet correlation across field (diversification vs concentration)
+  - Wave advantage (AM vs PM tee times + weather)
+  - Course type advantage (specific course types where model excels)
+  - Field strength effects (weak vs strong fields)
+  - Tournament structure (cut effects, 36-hole events, etc.)
 """
 
 from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from typing import Dict, List, Tuple
+from typing import List
 
 import numpy as np
-from scipy import stats as sp_stats
+from scipy import stats as scipy_stats
 
-from edge_analysis.schemas import GolfBetRecord, EdgeComponentResult
+from edge_analysis.schemas import GolfBetRecord, EdgeComponent
 
-log = logging.getLogger(__name__)
-
-
-def _compute_daily_returns(bets: List[GolfBetRecord]) -> np.ndarray:
-    daily: Dict[str, float] = defaultdict(float)
-    for b in bets:
-        if b.pnl is not None and b.pnl != 0:
-            day_key = b.timestamp.strftime("%Y-%m-%d")
-            daily[day_key] += b.pnl
-    if not daily:
-        return np.array([])
-    return np.array([v for _, v in sorted(daily.items())])
+logger = logging.getLogger(__name__)
 
 
-def _compute_bet_correlation(bets: List[GolfBetRecord]) -> Tuple[float, float]:
-    """Estimate correlation between bet outcomes using tournament-level clustering."""
-    # Group by tournament (golf bets within same event are more likely correlated)
-    tourn_bets: Dict[str, List[GolfBetRecord]] = defaultdict(list)
-    for b in bets:
-        if b.won is not None:
-            tourn_bets[b.tournament].append(b)
+class StructuralAnalyzer:
+    """Analyze structural/systematic edge factors specific to golf."""
 
-    if len(tourn_bets) < 5:
-        return 0.0, 1.0
+    def analyze(self, records: List[GolfBetRecord]) -> EdgeComponent:
+        """Compute structural edge from golf-specific factors."""
+        if not records:
+            return EdgeComponent(
+                name="structural", value=0.0, confidence=0.0,
+                verdict="No data to analyze.",
+            )
 
-    actual_variances = []
-    expected_variances = []
+        # Wave advantage analysis
+        wave_analysis = self._wave_advantage(records)
 
-    for tourn, tbets in tourn_bets.items():
-        if len(tbets) < 2:
-            continue
-        outcomes = np.array([1.0 if b.won else 0.0 for b in tbets])
-        n = len(outcomes)
-        p = float(np.mean(outcomes))
+        # Field correlation (are we overexposed to correlated outcomes?)
+        correlation_analysis = self._field_correlation(records)
 
-        expected_var = n * p * (1.0 - p) if 0 < p < 1 else 0.0
-        actual_var = float(np.var(outcomes) * n)
+        # Weather condition analysis
+        weather_analysis = self._weather_conditions(records)
 
-        if expected_var > 0:
-            actual_variances.append(actual_var)
-            expected_variances.append(expected_var)
+        # Course type analysis
+        course_analysis = self._course_type_analysis(records)
 
-    if not actual_variances:
-        return 0.0, 1.0
+        # Tournament structure
+        structure_analysis = self._tournament_structure(records)
 
-    avg_actual = float(np.mean(actual_variances))
-    avg_expected = float(np.mean(expected_variances))
-    variance_ratio = avg_actual / avg_expected if avg_expected > 0 else 1.0
+        # Aggregate structural edge
+        structural_edge = (
+            wave_analysis.get("wave_edge_cents", 0.0) * 0.3 +
+            correlation_analysis.get("diversification_benefit_cents", 0.0) * 0.2 +
+            weather_analysis.get("weather_edge_cents", 0.0) * 0.3 +
+            course_analysis.get("course_edge_cents", 0.0) * 0.2
+        )
 
-    avg_n = float(np.mean([len(v) for v in tourn_bets.values() if len(v) >= 2]))
-    rho = (variance_ratio - 1.0) / (avg_n - 1.0) if avg_n > 1 else 0.0
+        confidence = min(len(records) / 150.0, 1.0)
 
-    return float(np.clip(rho, -1.0, 1.0)), variance_ratio
-
-
-def _wave_correlation_analysis(bets: List[GolfBetRecord]) -> Dict:
-    """Analyze correlation between bets on same wave."""
-    wave_bets = [b for b in bets if b.wave is not None and b.won is not None]
-    if len(wave_bets) < 10:
-        return {"sufficient_data": False}
-
-    # Group by tournament + wave
-    wave_groups: Dict[str, List[GolfBetRecord]] = defaultdict(list)
-    for b in wave_bets:
-        key = f"{b.tournament}_{b.wave}"
-        wave_groups[key].append(b)
-
-    # Check if same-wave bets are more correlated than cross-wave
-    same_wave_outcomes = []
-    for key, group in wave_groups.items():
-        if len(group) >= 2:
-            outcomes = [1.0 if b.won else 0.0 for b in group]
-            same_wave_outcomes.extend(outcomes)
-
-    am_results = [1.0 if b.won else 0.0 for b in wave_bets if b.wave == "AM"]
-    pm_results = [1.0 if b.won else 0.0 for b in wave_bets if b.wave == "PM"]
-
-    return {
-        "sufficient_data": True,
-        "n_wave_bets": len(wave_bets),
-        "am_win_rate": round(float(np.mean(am_results)), 4) if am_results else None,
-        "pm_win_rate": round(float(np.mean(pm_results)), 4) if pm_results else None,
-        "n_am": len(am_results),
-        "n_pm": len(pm_results),
-        "same_wave_clustering": len(wave_groups),
-    }
-
-
-def _kelly_analysis(bets: List[GolfBetRecord]) -> Dict:
-    settled = [b for b in bets if b.won is not None and b.kelly_fraction > 0]
-    if len(settled) < 10:
-        return {"sufficient_data": False}
-
-    kelly_fractions = np.array([b.kelly_fraction for b in settled])
-    avg_kelly = float(np.mean(kelly_fractions))
-    max_kelly = float(np.max(kelly_fractions))
-
-    # Growth rate
-    returns = []
-    for b in settled:
-        if b.won:
-            r = b.odds_decimal - 1.0
+        if structural_edge > 2.0:
+            verdict = f"Strong structural edge ({structural_edge:.1f}c) — golf-specific factors contributing"
+        elif structural_edge > 0.5:
+            verdict = f"Moderate structural edge ({structural_edge:.1f}c)"
         else:
-            r = -1.0
-        growth = np.log(max(1e-10, 1.0 + b.kelly_fraction * r))
-        returns.append(growth)
-    growth_rate = float(np.mean(returns)) if returns else 0.0
+            verdict = f"Minimal structural edge ({structural_edge:.1f}c)"
 
-    # Full Kelly comparison
-    full_kelly_returns = []
-    for b in settled:
-        edge = b.predicted_prob - b.market_prob_at_bet
-        if b.odds_decimal > 1:
-            f_star = max(0, edge / (b.odds_decimal - 1.0))
-        else:
-            f_star = 0
-        r = (b.odds_decimal - 1.0) if b.won else -1.0
-        growth = np.log(max(1e-10, 1.0 + f_star * r))
-        full_kelly_returns.append(growth)
-    full_kelly_growth = float(np.mean(full_kelly_returns)) if full_kelly_returns else 0.0
-
-    return {
-        "sufficient_data": True,
-        "avg_kelly_fraction": round(avg_kelly, 4),
-        "max_kelly_fraction": round(max_kelly, 4),
-        "actual_growth_rate": round(growth_rate, 6),
-        "full_kelly_growth_rate": round(full_kelly_growth, 6),
-        "kelly_efficiency": round(growth_rate / full_kelly_growth, 4) if full_kelly_growth > 0 else 0.0,
-    }
-
-
-def _diversification_analysis(bets: List[GolfBetRecord]) -> Dict:
-    if not bets:
-        return {}
-
-    market_counts: Dict[str, int] = defaultdict(int)
-    player_counts: Dict[str, int] = defaultdict(int)
-    tournament_counts: Dict[str, int] = defaultdict(int)
-    for b in bets:
-        market_counts[b.market_type] += 1
-        player_counts[b.player] += 1
-        tournament_counts[b.tournament] += 1
-
-    total = len(bets)
-    hhi_market = sum((c / total) ** 2 for c in market_counts.values())
-    hhi_player = sum((c / total) ** 2 for c in player_counts.values())
-    hhi_tournament = sum((c / total) ** 2 for c in tournament_counts.values())
-
-    top_market = max(market_counts.items(), key=lambda x: x[1])
-    top_player = max(player_counts.items(), key=lambda x: x[1])
-
-    return {
-        "n_unique_markets": len(market_counts),
-        "n_unique_players": len(player_counts),
-        "n_unique_tournaments": len(tournament_counts),
-        "hhi_market": round(hhi_market, 4),
-        "hhi_player": round(hhi_player, 4),
-        "hhi_tournament": round(hhi_tournament, 4),
-        "top_market": {"name": top_market[0], "pct": round(top_market[1] / total, 4)},
-        "top_player": {"name": top_player[0], "pct": round(top_player[1] / total, 4)},
-        "market_distribution": dict(sorted(market_counts.items(), key=lambda x: -x[1])),
-    }
-
-
-def compute_structural_edge(
-    bets: List[GolfBetRecord],
-    total_roi: float,
-) -> EdgeComponentResult:
-    """Analyze golf structural (portfolio/bankroll) edge.
-
-    Golf-specific structural concerns:
-    1. Field-level diversification across players
-    2. Wave correlation (AM/PM bets within same tournament)
-    3. Tournament independence (week-to-week)
-    4. Outright portfolio construction (top-heavy concentration)
-    5. Kelly sizing in high-variance markets (outrights can be +5000)
-    """
-    settled = [b for b in bets if b.won is not None]
-    if len(settled) < 15:
-        return EdgeComponentResult(
+        return EdgeComponent(
             name="structural",
-            edge_pct_of_roi=0.0, absolute_value=0.0, p_value=1.0,
-            is_significant=False, is_positive=False,
-            sample_size=len(settled),
-            verdict="Insufficient data for structural edge analysis (need 15+ settled bets)",
+            value=round(structural_edge, 2),
+            confidence=round(confidence, 3),
+            details={
+                "wave_advantage": wave_analysis,
+                "field_correlation": correlation_analysis,
+                "weather_conditions": weather_analysis,
+                "course_type": course_analysis,
+                "tournament_structure": structure_analysis,
+            },
+            verdict=verdict,
         )
 
-    # Correlation
-    rho, variance_ratio = _compute_bet_correlation(settled)
+    def _wave_advantage(self, records: List[GolfBetRecord]) -> dict:
+        """Analyze AM vs PM wave advantage in betting outcomes."""
+        am_bets = [r for r in records if r.wave == "AM"]
+        pm_bets = [r for r in records if r.wave == "PM"]
 
-    # Kelly
-    kelly = _kelly_analysis(settled)
+        if len(am_bets) < 5 or len(pm_bets) < 5:
+            return {"has_data": False, "wave_edge_cents": 0.0}
 
-    # Wave correlation
-    wave = _wave_correlation_analysis(settled)
+        clv_am = float(np.mean([r.clv_cents for r in am_bets]))
+        clv_pm = float(np.mean([r.clv_cents for r in pm_bets]))
+        wr_am = float(np.mean([r.actual_outcome for r in am_bets]))
+        wr_pm = float(np.mean([r.actual_outcome for r in pm_bets]))
 
-    # Diversification
-    diversification = _diversification_analysis(settled)
+        # Wave edge: how much better do we perform in one wave
+        wave_edge = abs(clv_am - clv_pm)
 
-    # Daily returns
-    daily_returns = _compute_daily_returns(settled)
-    sharpe = 0.0
-    max_drawdown = 0.0
-    if len(daily_returns) >= 10:
-        if np.std(daily_returns) > 0:
-            sharpe = float(np.mean(daily_returns)) / float(np.std(daily_returns)) * np.sqrt(52)
-        cumulative = np.cumsum(daily_returns)
-        running_max = np.maximum.accumulate(cumulative)
-        drawdowns = running_max - cumulative
-        max_drawdown = float(np.max(drawdowns)) if len(drawdowns) > 0 else 0.0
-
-    # Significance — bootstrap variance ratio test
-    p_value = 0.5
-    if len(daily_returns) >= 15:
-        n_boot = 1000
-        boot_ratios = []
-        orig_var = float(np.var(daily_returns))
-        if orig_var > 0:
-            for _ in range(n_boot):
-                idx = np.random.choice(len(daily_returns), size=len(daily_returns), replace=True)
-                boot_var = float(np.var(daily_returns[idx]))
-                boot_ratios.append(boot_var / orig_var)
-            p_value = float(np.mean(np.array(boot_ratios) > variance_ratio))
-
-    is_positive = variance_ratio < 1.2 and (
-        not kelly.get("sufficient_data") or kelly.get("kelly_efficiency", 0) > 0.3
-    )
-    is_significant = p_value < 0.05 or (
-        kelly.get("sufficient_data") and kelly.get("kelly_efficiency", 0) > 0.5
-    )
-
-    # Attribution
-    structural_pct = 0.0
-    if is_positive:
-        if kelly.get("sufficient_data"):
-            structural_pct = min(20.0, kelly.get("kelly_efficiency", 0) * 25.0)
+        # Statistical test
+        am_clvs = np.array([r.clv_cents for r in am_bets])
+        pm_clvs = np.array([r.clv_cents for r in pm_bets])
+        if len(am_clvs) >= 10 and len(pm_clvs) >= 10:
+            t_stat, p_val = scipy_stats.ttest_ind(am_clvs, pm_clvs)
         else:
-            structural_pct = 10.0 if variance_ratio < 1.1 else 5.0
-        hhi = diversification.get("hhi_tournament", 1.0)
-        if hhi < 0.15:
-            structural_pct += 3.0
-    else:
-        if variance_ratio > 1.5:
-            structural_pct = -10.0
-        elif variance_ratio > 1.2:
-            structural_pct = -5.0
+            p_val = 1.0
 
-    # Verdict
-    verdict_parts = []
-    if abs(rho) < 0.05:
-        verdict_parts.append(
-            f"Bet independence: GOOD (rho={rho:.3f}, variance ratio={variance_ratio:.2f})."
-        )
-    elif rho > 0.05:
-        verdict_parts.append(
-            f"WARNING: Bets positively correlated (rho={rho:.3f}). "
-            f"Tournament-level clustering — diversify across weeks."
-        )
-    else:
-        verdict_parts.append(
-            f"Natural hedge detected (rho={rho:.3f}). Good portfolio construction."
-        )
+        return {
+            "has_data": True,
+            "n_am_bets": len(am_bets),
+            "n_pm_bets": len(pm_bets),
+            "clv_am": round(clv_am, 2),
+            "clv_pm": round(clv_pm, 2),
+            "win_rate_am": round(wr_am, 4),
+            "win_rate_pm": round(wr_pm, 4),
+            "wave_edge_cents": round(wave_edge, 2),
+            "p_value": round(p_val, 4),
+            "better_wave": "AM" if clv_am > clv_pm else "PM",
+        }
 
-    if kelly.get("sufficient_data"):
-        eff = kelly.get("kelly_efficiency", 0)
-        if eff > 0.7:
-            verdict_parts.append(f"Kelly sizing: EXCELLENT (efficiency={eff:.0%}).")
-        elif eff > 0.4:
-            verdict_parts.append(f"Kelly sizing: ACCEPTABLE (efficiency={eff:.0%}).")
+    def _field_correlation(self, records: List[GolfBetRecord]) -> dict:
+        """Analyze correlation of bets within same tournament fields."""
+        # Group by tournament
+        by_tournament = defaultdict(list)
+        for r in records:
+            by_tournament[r.tournament].append(r)
+
+        concentration_scores = []
+        intra_tournament_corrs = []
+
+        for tourn, recs in by_tournament.items():
+            if len(recs) < 2:
+                continue
+
+            # Concentration: how many bets in one tournament
+            concentration_scores.append(len(recs))
+
+            # Intra-tournament outcome correlation
+            outcomes = [r.actual_outcome for r in recs]
+            if len(set(outcomes)) > 1:
+                # Win rate within tournament vs overall
+                tourn_wr = float(np.mean(outcomes))
+                overall_wr = float(np.mean([r.actual_outcome for r in records]))
+                intra_tournament_corrs.append(tourn_wr - overall_wr)
+
+        avg_concentration = float(np.mean(concentration_scores)) if concentration_scores else 0
+        max_concentration = max(concentration_scores) if concentration_scores else 0
+
+        # Diversification benefit: spread bets reduce variance
+        n_tournaments = len(by_tournament)
+        n_bets = len(records)
+        div_ratio = n_tournaments / max(n_bets, 1)
+
+        # Optimal: ~3-5 bets per tournament for golf
+        # Over-concentration penalty
+        if avg_concentration > 8:
+            div_benefit = -1.0  # Too concentrated
+        elif avg_concentration < 2:
+            div_benefit = 0.5  # Well diversified
         else:
-            verdict_parts.append(f"Kelly sizing: POOR (efficiency={eff:.0%}). Review outright sizing.")
+            div_benefit = 1.0  # Good balance
 
-    if wave.get("sufficient_data"):
-        verdict_parts.append(
-            f"Wave analysis: AM={wave.get('am_win_rate', 0):.1%} win rate, "
-            f"PM={wave.get('pm_win_rate', 0):.1%}. "
-            f"Same-wave groups: {wave.get('same_wave_clustering', 0)}."
-        )
+        return {
+            "n_tournaments": n_tournaments,
+            "avg_bets_per_tournament": round(avg_concentration, 1),
+            "max_bets_per_tournament": max_concentration,
+            "diversification_ratio": round(div_ratio, 4),
+            "diversification_benefit_cents": round(div_benefit, 2),
+            "intra_tournament_corr": round(float(np.mean(intra_tournament_corrs)), 4) if intra_tournament_corrs else 0.0,
+        }
 
-    hhi_t = diversification.get("hhi_tournament", 1.0)
-    if hhi_t < 0.1:
-        verdict_parts.append("Tournament diversification: EXCELLENT.")
-    elif hhi_t < 0.25:
-        verdict_parts.append("Tournament diversification: ACCEPTABLE.")
-    else:
-        verdict_parts.append("Tournament diversification: POOR — too concentrated.")
+    def _weather_conditions(self, records: List[GolfBetRecord]) -> dict:
+        """Analyze performance by weather conditions."""
+        by_weather = defaultdict(list)
+        for r in records:
+            by_weather[r.weather_conditions].append(r)
 
-    return EdgeComponentResult(
-        name="structural",
-        edge_pct_of_roi=round(structural_pct, 2),
-        absolute_value=round(variance_ratio, 4),
-        p_value=round(p_value, 4),
-        is_significant=is_significant,
-        is_positive=is_positive,
-        sample_size=len(settled),
-        details={
-            "correlation_rho": round(rho, 4),
-            "variance_ratio": round(variance_ratio, 4),
-            "annualized_sharpe": round(sharpe, 3),
-            "max_drawdown": round(max_drawdown, 2),
-            "kelly": kelly,
-            "wave_analysis": wave,
-            "diversification": diversification,
-        },
-        verdict=" ".join(verdict_parts),
-    )
+        result = {}
+        overall_clv = float(np.mean([r.clv_cents for r in records]))
+
+        for condition, recs in by_weather.items():
+            clvs = [r.clv_cents for r in recs]
+            avg_clv = float(np.mean(clvs))
+            result[condition] = {
+                "n_bets": len(recs),
+                "avg_clv": round(avg_clv, 2),
+                "win_rate": round(float(np.mean([r.actual_outcome for r in recs])), 4),
+                "edge_vs_overall": round(avg_clv - overall_clv, 2),
+            }
+
+        # Weather edge: how much more edge in non-normal conditions
+        non_normal = [r for r in records if r.weather_conditions != "normal"]
+        normal = [r for r in records if r.weather_conditions == "normal"]
+
+        if non_normal and normal:
+            weather_edge = float(np.mean([r.clv_cents for r in non_normal])) - float(np.mean([r.clv_cents for r in normal]))
+        else:
+            weather_edge = 0.0
+
+        return {
+            "by_condition": result,
+            "weather_edge_cents": round(weather_edge, 2),
+            "n_weather_bets": len(non_normal),
+        }
+
+    def _course_type_analysis(self, records: List[GolfBetRecord]) -> dict:
+        """Analyze performance by course type."""
+        by_course = defaultdict(list)
+        for r in records:
+            by_course[r.course_id].append(r)
+
+        course_clvs = {}
+        for course, recs in by_course.items():
+            if len(recs) >= 3:
+                course_clvs[course] = {
+                    "n_bets": len(recs),
+                    "avg_clv": round(float(np.mean([r.clv_cents for r in recs])), 2),
+                    "win_rate": round(float(np.mean([r.actual_outcome for r in recs])), 4),
+                }
+
+        # Course edge: variance in CLV across courses indicates structural advantage
+        if len(course_clvs) >= 3:
+            clv_values = [v["avg_clv"] for v in course_clvs.values()]
+            course_edge = max(clv_values) - min(clv_values)
+        else:
+            course_edge = 0.0
+
+        return {
+            "n_courses": len(by_course),
+            "by_course": course_clvs,
+            "course_edge_cents": round(course_edge, 2),
+        }
+
+    def _tournament_structure(self, records: List[GolfBetRecord]) -> dict:
+        """Analyze how tournament structure affects edge."""
+        by_market = defaultdict(list)
+        for r in records:
+            by_market[r.market_type].append(r)
+
+        # Make cut bets: structural advantage from modeling cut dynamics
+        cut_bets = by_market.get("make_cut", [])
+        non_cut = [r for r in records if r.market_type != "make_cut"]
+
+        cut_clv = float(np.mean([r.clv_cents for r in cut_bets])) if cut_bets else 0.0
+        other_clv = float(np.mean([r.clv_cents for r in non_cut])) if non_cut else 0.0
+
+        return {
+            "n_cut_bets": len(cut_bets),
+            "cut_bet_clv": round(cut_clv, 2),
+            "other_bet_clv": round(other_clv, 2),
+            "cut_structural_edge": round(cut_clv - other_clv, 2),
+        }

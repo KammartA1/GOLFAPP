@@ -1,39 +1,20 @@
-"""
-Golf Quant Engine — Tournament Simulation Package
-===================================================
-Hole-by-hole, round-by-round Monte Carlo tournament simulator.
-Produces win/top-N/cut probabilities and head-to-head edges.
+"""Hole-by-hole tournament simulation engine.
+
+Full Monte Carlo simulation of PGA Tour tournaments:
+  - 18-hole round simulation with discrete outcomes per hole
+  - 4-round tournament with cut dynamics
+  - Player-specific SG-based scoring models
+  - Weather, wave, and pressure effects
+  - N=10,000 simulations for outcome distributions
+
+Usage:
+    from simulation.tournament_engine import TournamentSimulator
+
+    sim = TournamentSimulator(n_sims=10000)
+    results = sim.simulate_tournament(players, course, weather)
 """
 
+from simulation.tournament_engine import TournamentSimulator
 from simulation.config import SimulationConfig
-from simulation.player_model import PlayerModel, PlayerSGComponents
-from simulation.course_model import CourseModel, HoleSpec
-from simulation.weather_model import WeatherModel, WeatherConditions
-from simulation.wave_model import WaveModel, WaveAssignment
-from simulation.pressure_model import PressureModel
-from simulation.cut_model import CutModel
-from simulation.volatility_model import VolatilityModel
-from simulation.hole_engine import HoleEngine
-from simulation.round_engine import RoundEngine
-from simulation.tournament_engine import TournamentEngine, TournamentResult
-from simulation.validation import ValidationSuite
 
-__all__ = [
-    "SimulationConfig",
-    "PlayerModel",
-    "PlayerSGComponents",
-    "CourseModel",
-    "HoleSpec",
-    "WeatherModel",
-    "WeatherConditions",
-    "WaveModel",
-    "WaveAssignment",
-    "PressureModel",
-    "CutModel",
-    "VolatilityModel",
-    "HoleEngine",
-    "RoundEngine",
-    "TournamentEngine",
-    "TournamentResult",
-    "ValidationSuite",
-]
+__all__ = ["TournamentSimulator", "SimulationConfig"]

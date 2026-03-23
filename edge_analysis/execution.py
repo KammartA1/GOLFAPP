@@ -1,174 +1,202 @@
-"""
-edge_analysis/execution.py
-============================
-Component 4: EXECUTION EDGE — Golf line shopping effectiveness.
+"""Execution edge component — Price quality and line shopping effectiveness.
 
-Golf-specific execution analysis:
-  - Line shopping across multiple books (outright odds vary dramatically)
-  - Timing of bet placement relative to market moves
-  - Slippage in thin golf markets
-  - Book-specific execution quality
+Measures how well we execute bets:
+  - Price quality: did we get good odds relative to true probability?
+  - Line shopping: did we find the best available price?
+  - Speed: did execution delay cost us edge?
+  - Slippage: difference between expected and actual fill price
 """
 
 from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from typing import Dict, List
+from typing import List
 
 import numpy as np
-from scipy import stats as sp_stats
 
-from edge_analysis.schemas import GolfBetRecord, EdgeComponentResult
+from edge_analysis.schemas import GolfBetRecord, EdgeComponent
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
-def _compute_execution_cost(bet: GolfBetRecord) -> float:
-    """Execution cost (slippage) for a golf bet.
+class ExecutionAnalyzer:
+    """Analyze execution quality of placed bets."""
 
-    For outright/futures: compare signal odds to bet odds in probability space.
-    For props: compare signal line to bet line.
-    """
-    if bet.market_type in ("outright", "top5", "top10", "top20", "make_cut", "matchup"):
-        # Odds-based: signal implied prob vs bet implied prob
-        # Worse price = higher implied prob to win (paying more vig)
-        signal_prob = bet.predicted_prob  # Signal identified this probability
-        if bet.market_prob_at_bet > 0 and bet.predicted_prob > 0:
-            # Cost = market prob at bet - signal implied price
-            # Positive = we paid more than signal indicated
-            return bet.market_prob_at_bet - bet.predicted_prob
-        # Line-based fallback
-        return bet.bet_line - bet.signal_line
-    else:
-        if bet.direction.upper() == "OVER":
-            return bet.bet_line - bet.signal_line
+    def analyze(self, records: List[GolfBetRecord]) -> EdgeComponent:
+        """Compute execution edge — how well did we capture available edge?"""
+        if not records:
+            return EdgeComponent(
+                name="execution", value=0.0, confidence=0.0,
+                verdict="No data to analyze.",
+            )
+
+        # Price quality: compare bet price to signal price
+        price_quality = self._price_quality_analysis(records)
+
+        # Line shopping: compare our price to what was available
+        shop_analysis = self._line_shopping_analysis(records)
+
+        # Execution speed
+        speed_analysis = self._speed_analysis(records)
+
+        # Per-book analysis
+        book_analysis = self._per_book_analysis(records)
+
+        # Execution edge in cents: difference between signal edge and captured edge
+        signal_edges = np.array([r.predicted_prob - (1.0 / r.odds_decimal) for r in records
+                                 if r.odds_decimal > 1.0])
+        captured_edges = np.array([r.clv_cents for r in records])
+
+        if len(signal_edges) > 0 and len(captured_edges) > 0:
+            # Execution cost = how much edge we lose in execution
+            avg_signal_edge = float(np.mean(signal_edges)) * 100  # to cents
+            avg_captured = float(np.mean(captured_edges))
+            execution_cost = avg_signal_edge - avg_captured
+            execution_edge = -execution_cost  # Negative cost = positive execution
         else:
-            return bet.signal_line - bet.bet_line
+            execution_cost = 0.0
+            execution_edge = 0.0
 
+        confidence = min(len(records) / 100.0, 1.0)
 
-def _compute_execution_vs_close(bet: GolfBetRecord) -> float:
-    """Fraction of signal-to-close move captured. 1.0 = captured all value."""
-    if bet.direction.upper() in ("OVER", "WIN", "PLACE"):
-        total_move = bet.closing_line - bet.signal_line
-        captured = bet.closing_line - bet.bet_line
-    else:
-        total_move = bet.signal_line - bet.closing_line
-        captured = bet.bet_line - bet.closing_line
+        if execution_edge > 0:
+            verdict = f"Good execution (+{execution_edge:.1f}c above expected)"
+        elif execution_edge > -1.0:
+            verdict = f"Acceptable execution ({execution_edge:.1f}c)"
+        else:
+            verdict = f"Poor execution ({execution_edge:.1f}c leakage)"
 
-    if abs(total_move) < 0.001:
-        return 1.0
-    return captured / total_move if total_move != 0 else 0.0
-
-
-def compute_execution_edge(
-    bets: List[GolfBetRecord],
-    total_roi: float,
-) -> EdgeComponentResult:
-    """Analyze golf execution quality.
-
-    Golf execution is critical because:
-    1. Outright markets have wide spreads (5-10% vig on some books)
-    2. Line shopping can save 2-5% on outright futures
-    3. Early-week prices are often better than tournament-week
-    4. Withdrawal announcements cause rapid line movement
-    """
-    valid = [b for b in bets if b.signal_line is not None and b.signal_line != 0]
-    if len(valid) < 15:
-        return EdgeComponentResult(
+        return EdgeComponent(
             name="execution",
-            edge_pct_of_roi=0.0, absolute_value=0.0, p_value=1.0,
-            is_significant=False, is_positive=False,
-            sample_size=len(valid),
-            verdict="Insufficient data for execution edge analysis (need 15+ bets)",
+            value=round(execution_edge, 2),
+            confidence=round(confidence, 3),
+            details={
+                "price_quality": price_quality,
+                "line_shopping": shop_analysis,
+                "speed": speed_analysis,
+                "by_book": book_analysis,
+                "execution_cost_cents": round(execution_cost, 2),
+            },
+            verdict=verdict,
         )
 
-    costs = np.array([_compute_execution_cost(b) for b in valid])
-    captures = np.array([_compute_execution_vs_close(b) for b in valid])
+    def _price_quality_analysis(self, records: List[GolfBetRecord]) -> dict:
+        """Analyze how good the prices were that we got."""
+        slippages = []
+        for r in records:
+            # Slippage = difference between signal line and bet line
+            slip = r.bet_line - r.signal_line
+            slippages.append(slip)
 
-    avg_cost = float(np.mean(costs))
-    median_cost = float(np.median(costs))
-    pct_improved = float(np.mean(costs < 0))
-    avg_capture = float(np.mean(captures))
+        slippages_arr = np.array(slippages)
 
-    t_stat, p_two = sp_stats.ttest_1samp(costs, 0.0)
-    p_value = float(p_two)
-    is_positive = avg_cost < 0
-    is_significant = p_value < 0.05
+        # Price quality score: percentage of bets where we got signal price or better
+        got_signal_or_better = float(np.mean(slippages_arr <= 0))
 
-    # Per market type
-    market_groups: Dict[str, List[float]] = defaultdict(list)
-    for b in valid:
-        market_groups[b.market_type].append(_compute_execution_cost(b))
-
-    cost_by_market = {}
-    for mtype, vals in market_groups.items():
-        arr = np.array(vals)
-        cost_by_market[mtype] = {
-            "avg_slippage": round(float(np.mean(arr)), 4),
-            "pct_improved": round(float(np.mean(arr < 0)), 4),
-            "n_bets": len(vals),
+        return {
+            "avg_slippage": round(float(np.mean(slippages_arr)), 3),
+            "median_slippage": round(float(np.median(slippages_arr)), 3),
+            "max_slippage": round(float(np.max(np.abs(slippages_arr))), 3) if len(slippages_arr) > 0 else 0.0,
+            "pct_at_signal_or_better": round(got_signal_or_better, 4),
+            "n_bets": len(records),
         }
 
-    total_drag = float(np.sum(costs))
+    def _line_shopping_analysis(self, records: List[GolfBetRecord]) -> dict:
+        """Analyze line shopping effectiveness across books."""
+        # Group by tournament + player to see if we found the best line
+        by_opportunity = defaultdict(list)
+        for r in records:
+            key = f"{r.tournament}|{r.player}|{r.market_type}"
+            by_opportunity[key].append(r)
 
-    # Attribution
-    if is_positive and is_significant:
-        exec_pct = min(15.0, pct_improved * 20.0)
-    elif is_positive:
-        exec_pct = min(8.0, pct_improved * 10.0)
-    elif is_significant:
-        exec_pct = max(-20.0, -abs(avg_cost) * 10.0)
-    else:
-        exec_pct = max(-10.0, -abs(avg_cost) * 5.0)
+        n_shopped = 0
+        savings_cents = []
 
-    # Verdict
-    verdict_parts = []
-    if is_positive and is_significant:
-        verdict_parts.append(
-            f"POSITIVE execution edge. Line shopping effective — avg improvement: "
-            f"{abs(avg_cost):.4f}. {pct_improved:.0%} executed at better-than-signal price."
-        )
-    elif is_positive:
-        verdict_parts.append(
-            f"Slight execution advantage ({abs(avg_cost):.4f} avg improvement) "
-            f"but NOT significant (p={p_value:.4f})."
-        )
-    elif is_significant:
-        verdict_parts.append(
-            f"EXECUTION DRAG detected. Avg slippage: {avg_cost:+.4f}. "
-            f"Only {pct_improved:.0%} of bets improved. Golf markets are thin — "
-            f"consider earlier betting and multi-book line shopping."
-        )
-    else:
-        verdict_parts.append(
-            f"Neutral execution. Avg slippage: {avg_cost:+.4f} (p={p_value:.4f}). "
-            f"Capture rate: {avg_capture:.0%}."
-        )
+        for key, recs in by_opportunity.items():
+            if len(recs) > 1:
+                # Multiple bets on same opportunity — compare prices
+                best_odds = max(r.odds_decimal for r in recs)
+                for r in recs:
+                    saving = (1.0 / r.odds_decimal - 1.0 / best_odds) * 100
+                    savings_cents.append(saving)
+                n_shopped += 1
 
-    # Market-specific execution notes
-    if "outright" in cost_by_market:
-        out = cost_by_market["outright"]
-        verdict_parts.append(
-            f"Outright execution: avg slippage {out['avg_slippage']:+.4f} "
-            f"({out['pct_improved']:.0%} improved, n={out['n_bets']})."
-        )
+        if not savings_cents:
+            return {
+                "has_data": False,
+                "n_unique_opportunities": len(by_opportunity),
+            }
 
-    return EdgeComponentResult(
-        name="execution",
-        edge_pct_of_roi=round(exec_pct, 2),
-        absolute_value=round(avg_cost, 4),
-        p_value=round(p_value, 4),
-        is_significant=is_significant,
-        is_positive=is_positive,
-        sample_size=len(valid),
-        details={
-            "avg_slippage": round(avg_cost, 4),
-            "median_slippage": round(median_cost, 4),
-            "pct_price_improved": round(pct_improved, 4),
-            "avg_capture_rate": round(avg_capture, 4),
-            "total_drag": round(total_drag, 4),
-            "cost_by_market": cost_by_market,
-        },
-        verdict=" ".join(verdict_parts),
-    )
+        return {
+            "has_data": True,
+            "n_unique_opportunities": len(by_opportunity),
+            "n_shopped_across_books": n_shopped,
+            "avg_shopping_savings_cents": round(float(np.mean(savings_cents)), 2),
+            "total_shopping_savings_cents": round(float(np.sum(savings_cents)), 2),
+        }
+
+    def _speed_analysis(self, records: List[GolfBetRecord]) -> dict:
+        """Analyze execution speed — does delay cost edge?"""
+        timed = [r for r in records if r.signal_timestamp and r.bet_timestamp]
+        if len(timed) < 10:
+            return {"has_data": False}
+
+        delays = []
+        for r in timed:
+            delay_minutes = (r.bet_timestamp - r.signal_timestamp).total_seconds() / 60.0
+            if delay_minutes >= 0:
+                delays.append({
+                    "delay_minutes": delay_minutes,
+                    "clv_cents": r.clv_cents,
+                    "edge": r.edge,
+                })
+
+        if len(delays) < 10:
+            return {"has_data": False}
+
+        delay_arr = np.array([d["delay_minutes"] for d in delays])
+        clv_arr = np.array([d["clv_cents"] for d in delays])
+
+        # Split into fast vs slow execution
+        median_delay = float(np.median(delay_arr))
+        fast = [d for d in delays if d["delay_minutes"] <= median_delay]
+        slow = [d for d in delays if d["delay_minutes"] > median_delay]
+
+        clv_fast = float(np.mean([d["clv_cents"] for d in fast])) if fast else 0.0
+        clv_slow = float(np.mean([d["clv_cents"] for d in slow])) if slow else 0.0
+
+        # Correlation between delay and CLV
+        corr = float(np.corrcoef(delay_arr, clv_arr)[0, 1]) if len(delay_arr) > 2 else 0.0
+
+        return {
+            "has_data": True,
+            "avg_delay_minutes": round(float(np.mean(delay_arr)), 1),
+            "median_delay_minutes": round(median_delay, 1),
+            "clv_fast_execution": round(clv_fast, 2),
+            "clv_slow_execution": round(clv_slow, 2),
+            "speed_premium_cents": round(clv_fast - clv_slow, 2),
+            "delay_clv_correlation": round(corr, 4),
+        }
+
+    def _per_book_analysis(self, records: List[GolfBetRecord]) -> dict:
+        """Analyze execution quality per sportsbook."""
+        grouped = defaultdict(list)
+        for r in records:
+            grouped[r.book].append(r)
+
+        result = {}
+        for book, recs in grouped.items():
+            clvs = [r.clv_cents for r in recs]
+            edges = [r.edge for r in recs]
+            slippages = [r.bet_line - r.signal_line for r in recs]
+
+            result[book] = {
+                "n_bets": len(recs),
+                "avg_clv": round(float(np.mean(clvs)), 2),
+                "avg_edge": round(float(np.mean(edges)), 4),
+                "avg_slippage": round(float(np.mean(slippages)), 3),
+                "beat_close_rate": round(float(np.mean([1.0 if r.beat_close else 0.0 for r in recs])), 4),
+            }
+
+        return result
