@@ -23,6 +23,7 @@ TABS = [
     "\U0001f9ee Quant System",
     "\U0001f4c8 CLV System",
     "\U0001f50d Data Quality",
+    "\U0001f9e0 Edge Sources",
 ]
 
 # Default user ID (single-user mode)
