@@ -164,8 +164,9 @@ class EdgeDecomposer:
 
                 market_prob_close = None
                 if row.closing_line and row.closing_line != 0:
-                    # Approximate: use odds if available
-                    pass
+                    market_prob_close = abs(1.0 / (1.0 + (row.closing_line / 100.0
+                                          if row.closing_line > 0
+                                          else -100.0 / row.closing_line)))
 
                 # Extract features
                 tournament = row.event or ""

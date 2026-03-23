@@ -37,7 +37,7 @@ def _compute_execution_cost(bet: GolfBetRecord) -> float:
         if bet.market_prob_at_bet > 0 and bet.predicted_prob > 0:
             # Cost = market prob at bet - signal implied price
             # Positive = we paid more than signal indicated
-            return bet.market_prob_at_bet - bet.predicted_prob + (bet.predicted_prob - bet.predicted_prob)
+            return bet.market_prob_at_bet - bet.predicted_prob
         # Line-based fallback
         return bet.bet_line - bet.signal_line
     else:
