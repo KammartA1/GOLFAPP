@@ -21,6 +21,7 @@ TABS = [
     "\U0001f4b0 Bet Tracker",
     "\U0001f527 System Status",
     "\U0001f9ee Quant System",
+    "\U0001f4c8 CLV System",
 ]
 
 # Default user ID (single-user mode)

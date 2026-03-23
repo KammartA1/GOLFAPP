@@ -69,9 +69,10 @@ from streamlit_app.pages import (
     bet_tracker_tab,
     system_tab,
     quant_tab,
+    clv_tab,
 )
 
-tab_pp, tab_rank, tab_lb, tab_bets, tab_sys, tab_quant = st.tabs(TABS)
+tab_pp, tab_rank, tab_lb, tab_bets, tab_sys, tab_quant, tab_clv = st.tabs(TABS)
 
 with tab_pp:
     prizepicks_tab.render()
@@ -90,3 +91,6 @@ with tab_sys:
 
 with tab_quant:
     quant_tab.render()
+
+with tab_clv:
+    clv_tab.render()
