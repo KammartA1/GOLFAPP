@@ -24,6 +24,7 @@ TABS = [
     "\U0001f4c8 CLV System",
     "\U0001f50d Data Quality",
     "\U0001f9e0 Edge Sources",
+    "\U0001f52c Edge Decomp",
 ]
 
 # Default user ID (single-user mode)

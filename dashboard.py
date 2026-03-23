@@ -72,9 +72,10 @@ from streamlit_app.pages import (
     clv_tab,
     data_quality_tab,
     edge_sources_tab,
+    edge_decomposition_tab,
 )
 
-tab_pp, tab_rank, tab_lb, tab_bets, tab_sys, tab_quant, tab_clv, tab_dq, tab_edge = st.tabs(TABS)
+tab_pp, tab_rank, tab_lb, tab_bets, tab_sys, tab_quant, tab_clv, tab_dq, tab_edge, tab_decomp = st.tabs(TABS)
 
 with tab_pp:
     prizepicks_tab.render()
@@ -102,3 +103,6 @@ with tab_dq:
 
 with tab_edge:
     edge_sources_tab.render()
+
+with tab_decomp:
+    edge_decomposition_tab.render()
