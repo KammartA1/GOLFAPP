@@ -16,7 +16,7 @@ PAGE_CONFIG: dict = {
     "page_title": "Golf Quant Engine",
     "page_icon": "\u26f3",
     "layout": "wide",
-    "initial_sidebar_state": "collapsed",
+    "initial_sidebar_state": "expanded",
 }
 
 # ---------------------------------------------------------------------------
