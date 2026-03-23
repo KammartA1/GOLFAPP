@@ -22,6 +22,7 @@ TABS = [
     "\U0001f527 System Status",
     "\U0001f9ee Quant System",
     "\U0001f4c8 CLV System",
+    "\U0001f50d Data Quality",
 ]
 
 # Default user ID (single-user mode)

@@ -90,12 +90,21 @@ class OddsWorker(BaseWorker):
                 f"All odds sources failed: {'; '.join(errors)}"
             )
 
+        # Run post-ingestion data quality audit (non-blocking)
+        audit_result = {}
+        try:
+            from workers.data_audit_worker import run_post_ingestion_audit
+            audit_result = run_post_ingestion_audit()
+        except Exception as exc:
+            self._logger.warning("Post-ingestion audit skipped: %s", exc)
+
         return {
             "items_processed": total_lines,
             "prizepicks_lines": pp_count,
             "odds_api_lines": odds_count,
             "event": event_name,
             "errors": errors,
+            "audit_score": audit_result.get("composite_score"),
         }
 
     # ------------------------------------------------------------------ #

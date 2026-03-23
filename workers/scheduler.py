@@ -113,6 +113,7 @@ class GolfScheduler:
         from workers.model_worker import ModelWorker
         from workers.report_worker import ReportWorker
         from workers.stats_worker import StatsWorker
+        from workers.data_audit_worker import DataAuditWorker
 
         init_db()
 
@@ -131,8 +132,9 @@ class GolfScheduler:
         model = ModelWorker()
         report = ReportWorker()
         stats = StatsWorker()
+        data_audit = DataAuditWorker()
 
-        self._workers = [odds, signal_w, closing, model, report, stats]
+        self._workers = [odds, signal_w, closing, model, report, stats, data_audit]
 
         # Odds worker: every 15 minutes (golf)
         self._scheduler.add_job(
@@ -184,6 +186,15 @@ class GolfScheduler:
             CronTrigger(hour=6, minute=0, timezone="UTC"),
             id="stats_worker",
             name="Stats Worker",
+        )
+
+        # Data audit worker: every 30 minutes
+        self._scheduler.add_job(
+            data_audit.run_once,
+            IntervalTrigger(seconds=data_audit.interval_seconds),
+            id="data_audit_worker",
+            name="Data Audit Worker",
+            next_run_time=datetime.utcnow() + timedelta(seconds=240),
         )
 
         log.info("Scheduler configured with %d jobs", len(self._workers))
