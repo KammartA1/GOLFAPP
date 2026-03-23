@@ -26,6 +26,7 @@ pulp>=2.7.0
 
 # Scheduling / Automation
 schedule>=1.2.0
+APScheduler>=3.10.0
 python-dotenv>=1.0.0
 
 # CLI & Display
