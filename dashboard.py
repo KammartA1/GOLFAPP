@@ -1979,7 +1979,7 @@ Be extremely specific and quantitative. Reference exact SG numbers and course we
 
     try:
         message = client.messages.create(
-            model="claude-haiku-4-5-20241022",
+            model="claude-haiku-4-5",
             max_tokens=500,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -2027,7 +2027,7 @@ Be specific, data-driven, and brutally honest about risk. Use the exact numbers 
 
     try:
         message = client.messages.create(
-            model="claude-sonnet-4-5-20241022",
+            model="claude-sonnet-4-5",
             max_tokens=1000,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -2121,7 +2121,7 @@ Think like a professional bettor managing a $10K bankroll. Every dollar matters.
 
     try:
         message = client.messages.create(
-            model="claude-sonnet-4-5-20241022",
+            model="claude-sonnet-4-5",
             max_tokens=800,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -2387,7 +2387,7 @@ Be specific, data-driven, and actionable. Reference SG numbers and probabilities
 
     try:
         message = client.messages.create(
-            model="claude-sonnet-4-5-20241022",  # Sonnet for slate briefings
+            model="claude-sonnet-4-5",  # Sonnet for slate briefings
             max_tokens=800,
             messages=[{"role": "user", "content": prompt}],
         )
