@@ -255,3 +255,48 @@ register_migration(
     up=_v2_up,
     down=_v2_down,
 )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MIGRATION V3 — Add weather_data ORM table and ensure all new columns exist
+# ═══════════════════════════════════════════════════════════════════════════
+def _v3_up(engine: Engine) -> None:
+    """Create weather_data table via ORM and add any missing columns."""
+    from database.models import Base
+    Base.metadata.create_all(bind=engine)
+
+    # Ensure edge_pct column exists on bets table (may be missing on older DBs)
+    insp = inspect(engine)
+    bet_cols = {c["name"] for c in insp.get_columns("bets")}
+    ddl = []
+    if "edge_pct" not in bet_cols:
+        ddl.append("ALTER TABLE bets ADD COLUMN edge_pct REAL")
+
+    # Ensure kelly_stake column exists on signals
+    sig_cols = {c["name"] for c in insp.get_columns("signals")}
+    if "kelly_stake" not in sig_cols:
+        ddl.append("ALTER TABLE signals ADD COLUMN kelly_stake REAL")
+
+    if ddl:
+        with engine.begin() as conn:
+            for stmt in ddl:
+                try:
+                    conn.execute(text(stmt))
+                except Exception:
+                    pass  # Column may already exist
+    log.info("V3 UP: weather_data table + column patches applied.")
+
+
+def _v3_down(engine: Engine) -> None:
+    """Drop weather_data table."""
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS weather_data"))
+    log.info("V3 DOWN: weather_data table dropped.")
+
+
+register_migration(
+    version=3,
+    description="Add weather_data ORM table and ensure column patches",
+    up=_v3_up,
+    down=_v3_down,
+)

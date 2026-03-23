@@ -112,6 +112,7 @@ class GolfScheduler:
         from workers.closing_worker import ClosingWorker
         from workers.model_worker import ModelWorker
         from workers.report_worker import ReportWorker
+        from workers.stats_worker import StatsWorker
 
         init_db()
 
@@ -129,10 +130,11 @@ class GolfScheduler:
         closing = ClosingWorker()
         model = ModelWorker()
         report = ReportWorker()
+        stats = StatsWorker()
 
-        self._workers = [odds, signal_w, closing, model, report]
+        self._workers = [odds, signal_w, closing, model, report, stats]
 
-        # Odds worker: every 15 minutes
+        # Odds worker: every 15 minutes (golf)
         self._scheduler.add_job(
             odds.run_once,
             IntervalTrigger(seconds=odds.interval_seconds),
@@ -174,6 +176,14 @@ class GolfScheduler:
             CronTrigger(hour=3, minute=0, timezone="UTC"),
             id="report_worker",
             name="Report Worker",
+        )
+
+        # Stats worker: daily at 06:00 UTC (2 AM ET) — ingests player stats, SG, fields
+        self._scheduler.add_job(
+            stats.run_once,
+            CronTrigger(hour=6, minute=0, timezone="UTC"),
+            id="stats_worker",
+            name="Stats Worker",
         )
 
         log.info("Scheduler configured with %d jobs", len(self._workers))

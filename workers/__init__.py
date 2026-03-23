@@ -4,11 +4,12 @@ Golf Quant Engine -- Workers Layer
 Background workers that run independently of Streamlit.
 
 Workers:
-  - OddsWorker:    Fetches odds from PrizePicks, Odds API, DraftKings/FanDuel
-  - SignalWorker:  Generates betting signals from new line movements + SG model
-  - ClosingWorker: Captures closing lines and calculates CLV
-  - ModelWorker:   Retrains the SG projection model on schedule or trigger
-  - ReportWorker:  Generates daily/weekly edge reports
+  - OddsWorker:    Fetches odds from PrizePicks, Odds API, DraftKings/FanDuel (15 min)
+  - SignalWorker:  Generates betting signals from new line movements + SG model (30 min)
+  - ClosingWorker: Captures closing lines and calculates CLV (15 min)
+  - ModelWorker:   Retrains the SG projection model on schedule or trigger (1 hour check)
+  - ReportWorker:  Generates daily/weekly edge reports (daily @ 3 AM UTC)
+  - StatsWorker:   Daily data ingestion — player stats, SG data, tournament fields (daily @ 6 AM UTC)
 
 Quick start:
     # Run all workers with APScheduler
@@ -23,6 +24,7 @@ Quick start:
 CLI:
     python -m workers                   # start scheduler with all workers
     python -m workers.odds_worker       # run odds worker once
+    python -m workers.stats_worker      # run stats worker once
     python -m workers.scheduler         # start scheduler
     python -m workers.scheduler --health  # check health
 """
@@ -32,6 +34,7 @@ from workers.signal_worker import SignalWorker
 from workers.closing_worker import ClosingWorker
 from workers.model_worker import ModelWorker
 from workers.report_worker import ReportWorker
+from workers.stats_worker import StatsWorker
 from workers.scheduler import GolfScheduler
 
 __all__ = [
@@ -41,6 +44,7 @@ __all__ = [
     "ClosingWorker",
     "ModelWorker",
     "ReportWorker",
+    "StatsWorker",
     "GolfScheduler",
     "run_all",
 ]

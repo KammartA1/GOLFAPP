@@ -427,6 +427,34 @@ class SGStat(Base, DictMixin):
 # ═══════════════════════════════════════════════════════════════════════════
 # 13. Tournament Field
 # ═══════════════════════════════════════════════════════════════════════════
+class WeatherData(Base, DictMixin):
+    __tablename__ = "weather_data"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tournament_name: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    course_name: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
+    lat: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    lon: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    forecast_time: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    temp_f: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    wind_speed_mph: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    wind_gust_mph: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    wind_direction_deg: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    humidity_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    precipitation_mm: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    cloud_cover_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    fetched_at: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+
+    __table_args__ = (
+        Index("ix_wd_course_forecast", "course_name", "forecast_time"),
+        Index("ix_wd_fetched", "fetched_at"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<WeatherData id={self.id} course={self.course_name!r}>"
+
+
 class TournamentField(Base, TimestampMixin, DictMixin):
     __tablename__ = "tournament_field"
 
@@ -470,5 +498,6 @@ ALL_MODELS = [
     CalibrationSnapshot,
     SystemState,
     SGStat,
+    WeatherData,
     TournamentField,
 ]

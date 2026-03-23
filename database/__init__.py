@@ -34,6 +34,7 @@ from database.models import (
     CalibrationSnapshot,
     SystemState,
     SGStat,
+    WeatherData,
     TournamentField,
     ALL_MODELS,
 )
@@ -94,6 +95,7 @@ __all__ = [
     "CalibrationSnapshot",
     "SystemState",
     "SGStat",
+    "WeatherData",
     "TournamentField",
     "ALL_MODELS",
     # migrations

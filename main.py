@@ -270,5 +270,73 @@ def audit():
     console.print(f"\n[bold]Edge Decay Analysis:[/bold] {decay}")
 
 
+@cli.command()
+def workers():
+    """Start all background workers via APScheduler."""
+    console.print("\n[bold]Starting background workers...[/bold]")
+    console.print("  Workers: odds (15m), signal (30m), closing (15m), model (1h), report (daily), stats (daily)")
+    console.print("  Health endpoint: http://0.0.0.0:8089/health")
+    console.print("  Press Ctrl+C to stop.\n")
+
+    from workers import run_all
+    run_all()
+
+
+@cli.command()
+@click.argument("worker_name", type=click.Choice([
+    "odds", "signal", "closing", "model", "report", "stats",
+]))
+def run_worker(worker_name):
+    """Run a single worker once."""
+    print_header()
+    console.print(f"\n[bold]Running {worker_name} worker (one-shot)...[/bold]")
+
+    from workers import (
+        OddsWorker, SignalWorker, ClosingWorker,
+        ModelWorker, ReportWorker, StatsWorker,
+    )
+    worker_map = {
+        "odds": OddsWorker,
+        "signal": SignalWorker,
+        "closing": ClosingWorker,
+        "model": ModelWorker,
+        "report": ReportWorker,
+        "stats": StatsWorker,
+    }
+
+    worker = worker_map[worker_name]()
+    success = worker.run_once()
+    if success:
+        console.print(f"[green]Worker {worker_name} completed successfully.[/green]")
+    else:
+        console.print(f"[red]Worker {worker_name} failed.[/red]")
+        sys.exit(1)
+
+
+@cli.command()
+def db_status():
+    """Show database health and migration status."""
+    print_header()
+    from database.connection import health_check, init_db
+    from database.migrations import get_migration_status, auto_migrate
+
+    init_db()
+    auto_migrate()
+
+    health = health_check()
+    mig = get_migration_status()
+
+    console.print("\n[bold]Database Status[/bold]")
+    console.print(f"  Status:     {health.get('status', 'unknown')}")
+    console.print(f"  Driver:     {health.get('driver', 'unknown')}")
+    console.print(f"  Version:    {health.get('version', 'unknown')}")
+    console.print(f"  Journal:    {health.get('journal_mode', 'unknown')}")
+    console.print(f"  Schema:     v{mig.get('current_version', 0)} (latest: v{mig.get('latest_available', 0)})")
+    console.print(f"  Up to date: {'Yes' if mig.get('is_up_to_date') else 'No'}")
+
+    if not mig.get("is_up_to_date"):
+        console.print(f"  Pending:    {mig.get('pending_versions', [])}")
+
+
 if __name__ == "__main__":
     cli()
