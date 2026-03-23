@@ -24,6 +24,14 @@ import hashlib
 import traceback
 import requests
 
+# ── Section 9: Database-First Architecture ──
+try:
+    from services.startup import initialize_app, save_state_to_db, get_data_service
+    initialize_app()
+    _DB_AVAILABLE = True
+except Exception as _db_err:
+    _DB_AVAILABLE = False
+
 # ── Quant System v1.0 Integration ──
 from quant_system.engine import QuantEngine
 from quant_system.core.types import Sport, BetType, SystemState
@@ -4199,7 +4207,7 @@ def tab_quant_system(proj_df: pd.DataFrame, settings: dict):
     """, unsafe_allow_html=True)
 
     # Sub-tabs
-    qs_tabs = st.tabs(["Dashboard", "Bet Logger", "CLV Tracker", "Edge Validation", "Risk & Sizing", "Backtest"])
+    qs_tabs = st.tabs(["Dashboard", "Bet Logger", "CLV Tracker", "Edge Validation", "Risk & Sizing", "Backtest", "System Health"])
 
     # ── DASHBOARD ──
     with qs_tabs[0]:
@@ -4533,6 +4541,110 @@ def tab_quant_system(proj_df: pd.DataFrame, settings: dict):
             st.metric("Max Drawdown (median)", f"{mc_result['max_drawdown_median']*100:.1f}%")
             st.metric("Max Drawdown (95th pct)", f"{mc_result['max_drawdown_p95']*100:.1f}%")
 
+    # ── SYSTEM HEALTH (Section 9 — Database-First Architecture) ──
+    with qs_tabs[6]:
+        st.markdown("**System Health — Database-First Architecture**")
+        st.markdown('<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:10px;">Workers run independently of Streamlit. All state persists in the database.</div>', unsafe_allow_html=True)
+
+        if _DB_AVAILABLE:
+            try:
+                ds = get_data_service()
+                health = ds.get_system_health()
+
+                # Database health
+                db_status = health.get("database", {})
+                db_color = "#00FF88" if db_status.get("status") == "healthy" else "#FF3358"
+                st.markdown(f'<div class="glass-card" style="padding:10px 16px;border-left:3px solid {db_color};margin-bottom:12px;">'
+                            f'<span style="color:{db_color};font-weight:700;">Database: {db_status.get("status", "unknown").upper()}</span></div>', unsafe_allow_html=True)
+
+                # System state
+                sys_state = health.get("system_state", "active")
+                st.markdown(f"**System State:** `{sys_state.upper()}`")
+
+                # Workers
+                workers = health.get("workers", [])
+                if workers:
+                    st.markdown("**Background Workers**")
+                    worker_data = []
+                    for w in workers:
+                        worker_data.append({
+                            "Worker": w["name"],
+                            "Status": w["status"],
+                            "Last Run": w.get("last_run", "Never"),
+                            "Runs": w.get("run_count", 0),
+                            "Avg Duration": f"{w['avg_duration']:.1f}s" if w.get("avg_duration") else "N/A",
+                        })
+                    st.dataframe(pd.DataFrame(worker_data), use_container_width=True, hide_index=True)
+                else:
+                    st.info("No workers have run yet. Workers run independently of Streamlit.")
+
+                # Scrapers
+                scrapers = health.get("scrapers", [])
+                if scrapers:
+                    st.markdown("**Scraper Status**")
+                    scraper_data = []
+                    for s in scrapers:
+                        scraper_data.append({
+                            "Scraper": s["name"],
+                            "Healthy": "Yes" if s["is_healthy"] else "NO",
+                            "Last Success": s.get("last_success", "Never"),
+                            "Total Runs": s.get("total_runs", 0),
+                            "Lines (Last)": s.get("lines_last_scrape", 0),
+                        })
+                    st.dataframe(pd.DataFrame(scraper_data), use_container_width=True, hide_index=True)
+
+                # Active model
+                model = health.get("active_model")
+                if model:
+                    st.markdown("**Active Model**")
+                    m_cols = st.columns(4)
+                    with m_cols[0]:
+                        st.metric("Version", model["version"])
+                    with m_cols[1]:
+                        acc = model.get("live_accuracy")
+                        st.metric("Accuracy", f"{acc:.1%}" if acc else "N/A")
+                    with m_cols[2]:
+                        roi = model.get("live_roi")
+                        st.metric("ROI", f"{roi:.1%}" if roi else "N/A")
+                    with m_cols[3]:
+                        st.metric("Live Bets", model.get("n_live_bets", 0))
+
+                # Recent signals
+                signals = ds.get_recent_signals(hours=24)
+                if signals:
+                    st.markdown("**Recent Signals (24h)**")
+                    sig_df = pd.DataFrame(signals[:20])
+                    st.dataframe(sig_df[["player", "stat_type", "line", "direction", "edge", "approved"]], use_container_width=True, hide_index=True)
+
+                # Edge report
+                edge = ds.get_latest_edge_report()
+                if edge:
+                    st.markdown("**Latest Edge Report**")
+                    st.json(edge)
+
+                # Recent audit logs
+                logs = ds.get_recent_logs(limit=10)
+                if logs:
+                    st.markdown("**Recent System Logs**")
+                    for log in logs:
+                        lvl_color = {"info": "#94a3b8", "warning": "#FFB800", "error": "#FF3358", "critical": "#FF0000"}.get(log["level"], "#94a3b8")
+                        st.markdown(f'<div style="font-family:SF Mono,monospace;font-size:0.72rem;color:{lvl_color};margin-bottom:4px;">'
+                                    f'[{log["timestamp"][:19]}] {log["level"].upper()}: {log["message"]}</div>', unsafe_allow_html=True)
+
+                # DB schema verification
+                if st.button("Verify Database Schema", key="qs_verify_schema"):
+                    from database.migrations import MigrationManager
+                    schema = MigrationManager.verify_schema()
+                    if schema["healthy"]:
+                        st.success(f"Schema healthy: {schema['expected_tables']} tables, version {schema['version']}")
+                    else:
+                        st.error(f"Missing tables: {schema['missing']}")
+
+            except Exception as e:
+                st.error(f"System health check failed: {e}")
+        else:
+            st.warning("Database not initialized. The unified database layer will activate on next deployment.")
+
 
 # ============================================================
 # TAB 8 — SETTINGS (Bankroll, Calibration, Logged Bets, Config)
@@ -4580,6 +4692,12 @@ def tab_settings(proj_df: pd.DataFrame, settings: dict):
                 "amount": new_bankroll,
                 "action": "Manual Update",
             })
+            # Persist to database (Section 9)
+            if _DB_AVAILABLE:
+                try:
+                    save_state_to_db()
+                except Exception:
+                    pass
             st.success(f"Bankroll updated to ${new_bankroll:,.2f}")
 
         # Bankroll history
@@ -4680,6 +4798,11 @@ def tab_settings(proj_df: pd.DataFrame, settings: dict):
                         "result": "pending",
                         "profit": 0,
                     })
+                    if _DB_AVAILABLE:
+                        try:
+                            save_state_to_db()
+                        except Exception:
+                            pass
                     st.success(f"Logged: {bet_player} {bet_stat} {bet_side} {bet_line} — ${bet_amount}")
 
         # Display bets
