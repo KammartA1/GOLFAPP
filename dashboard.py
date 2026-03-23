@@ -24,6 +24,11 @@ import hashlib
 import traceback
 import requests
 
+# ── Quant System v1.0 Integration ──
+from quant_system.engine import QuantEngine
+from quant_system.core.types import Sport, BetType, SystemState
+from quant_system.risk.kelly_adaptive import KellyConfig
+
 try:
     from curl_cffi import requests as cffi_requests
     HAS_CURL_CFFI = True
@@ -4142,7 +4147,395 @@ def tab_live_scanner(proj_df: pd.DataFrame, settings: dict):
 
 
 # ============================================================
-# TAB 7 — SETTINGS (Bankroll, Calibration, Logged Bets, Config)
+# TAB 7 — QUANT SYSTEM (CLV, Edge Validation, Risk, Dashboard)
+# ============================================================
+def _get_quant_engine(settings: dict) -> QuantEngine:
+    """Get or create the QuantEngine singleton in session state."""
+    if "_quant_engine" not in st.session_state:
+        bankroll = settings.get("bankroll", 1000)
+        db_path = os.path.join(os.path.dirname(__file__), "data", "quant_system.db")
+        st.session_state["_quant_engine"] = QuantEngine(
+            sport=Sport.GOLF,
+            initial_bankroll=bankroll,
+            kelly_config=KellyConfig(
+                base_fraction=0.10,
+                max_single_bet_pct=0.03,
+                min_edge_to_bet=0.04,
+            ),
+            db_path=db_path,
+        )
+    return st.session_state["_quant_engine"]
+
+
+def tab_quant_system(proj_df: pd.DataFrame, settings: dict):
+    """Quant System dashboard — CLV tracking, edge validation, risk management, self-learning."""
+    st.markdown(section_header("Quant System", "&#128202;", "Production Risk & Edge Management"), unsafe_allow_html=True)
+
+    engine = _get_quant_engine(settings)
+    bankroll = settings.get("bankroll", 1000)
+
+    # Health bar at top
+    health = engine.health_check()
+    state = engine.edge_validator.get_current_state()
+    state_colors = {
+        SystemState.ACTIVE: "#00FF88",
+        SystemState.REDUCED: "#FFB800",
+        SystemState.SUSPENDED: "#FF3358",
+        SystemState.KILLED: "#FF0000",
+    }
+    state_color = state_colors.get(state, "#94a3b8")
+    st.markdown(f"""
+    <div class="glass-card" style="padding:12px 18px;margin-bottom:16px;border-left:4px solid {state_color};">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+                <span style="font-size:0.7rem;color:#64748b;letter-spacing:0.1em;text-transform:uppercase;">System State</span>
+                <div style="font-size:1.3rem;font-weight:700;color:{state_color};font-family:SF Mono,monospace;">{state.value.upper()}</div>
+            </div>
+            <div style="font-family:SF Mono,monospace;font-size:0.75rem;color:#94a3b8;text-align:right;">
+                {health}
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Sub-tabs
+    qs_tabs = st.tabs(["Dashboard", "Bet Logger", "CLV Tracker", "Edge Validation", "Risk & Sizing", "Backtest"])
+
+    # ── DASHBOARD ──
+    with qs_tabs[0]:
+        st.markdown("**System Overview**")
+        try:
+            report = engine.dashboard_report()
+
+            # Bankroll row
+            br = report.get("bankroll", {})
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Bankroll", f"${br.get('current', bankroll):,.0f}")
+            with col2:
+                st.metric("Peak", f"${br.get('peak', bankroll):,.0f}")
+            with col3:
+                dd = br.get("drawdown_pct", 0)
+                st.metric("Drawdown", f"{dd:.1f}%", delta=f"-{dd:.1f}%" if dd > 0 else "0%", delta_color="inverse")
+            with col4:
+                st.metric("Daily P&L", f"${br.get('daily_pnl', 0):+,.2f}")
+
+            # Bet summary row
+            bs = report.get("bet_summary", {})
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Bets", bs.get("total_bets", 0))
+            with col2:
+                wr = bs.get("win_rate", 0) * 100
+                st.metric("Win Rate", f"{wr:.1f}%")
+            with col3:
+                st.metric("Total P&L", f"${bs.get('total_pnl', 0):+,.2f}")
+            with col4:
+                st.metric("Avg Edge", f"{bs.get('avg_edge', 0)*100:.1f}%")
+
+            # CLV summary
+            st.markdown("---")
+            st.markdown("**CLV Performance (Most Important Metric)**")
+            clv = report.get("clv", {})
+            clv_cols = st.columns(4)
+            for i, window in enumerate(["clv_50", "clv_100", "clv_250", "clv_500"]):
+                with clv_cols[i]:
+                    data = clv.get(window, {})
+                    cents = data.get("avg_clv_cents", 0)
+                    n = data.get("n_bets", 0)
+                    beat = data.get("beat_close_pct", 0) * 100
+                    color = "#00FF88" if cents > 0 else "#FF3358"
+                    st.markdown(f"""
+                    <div class="glass-card" style="padding:10px;text-align:center;">
+                        <div style="font-size:0.65rem;color:#64748b;">{window.replace('clv_', 'Last ')} bets</div>
+                        <div style="font-size:1.4rem;font-weight:700;color:{color};font-family:SF Mono,monospace;">{cents:+.1f}c</div>
+                        <div style="font-size:0.6rem;color:#94a3b8;">Beat close: {beat:.0f}% | n={n}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            # P&L Curve
+            pnl_curve = report.get("pnl_curve", [])
+            if len(pnl_curve) > 1:
+                st.markdown("**Bankroll Curve**")
+                curve_df = pd.DataFrame(pnl_curve)
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=curve_df["bet_num"], y=curve_df["bankroll"],
+                                         mode="lines", line=dict(color="#00FF88", width=2),
+                                         fill="tozeroy", fillcolor="rgba(0,255,136,0.08)"))
+                fig.update_layout(
+                    template="plotly_dark", height=280, margin=dict(l=40, r=20, t=20, b=30),
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                    xaxis_title="Bet #", yaxis_title="Bankroll ($)",
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+            # Edge validation
+            edge = report.get("edge", {})
+            if edge.get("warnings"):
+                for w in edge["warnings"]:
+                    st.warning(w)
+            if edge.get("actions"):
+                for a in edge["actions"]:
+                    st.error(f"Action Required: {a}")
+
+            # MC Projection
+            mc = report.get("mc_projection", {})
+            if mc and "ruin_probability" in mc:
+                st.markdown("**Monte Carlo Projection (10,000 paths)**")
+                mc_cols = st.columns(4)
+                with mc_cols[0]:
+                    st.metric("Ruin Prob", f"{mc['ruin_probability']:.1%}")
+                with mc_cols[1]:
+                    st.metric("Median Final", f"${mc['median_final']:,.0f}")
+                with mc_cols[2]:
+                    st.metric("Profitable Paths", f"{mc['paths_profitable']:.0%}")
+                with mc_cols[3]:
+                    st.metric("5th Percentile", f"${mc['p5_final']:,.0f}")
+
+        except Exception as e:
+            st.info(f"Dashboard will populate as bets are logged. ({e})")
+
+    # ── BET LOGGER ──
+    with qs_tabs[1]:
+        st.markdown("**Log Bets Through Quant Engine**")
+        st.markdown('<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:10px;">Every bet logged here flows through the full risk pipeline: edge validation, Kelly sizing, exposure checks, and circuit breakers.</div>', unsafe_allow_html=True)
+
+        with st.expander("Log New Bet via Quant Engine", expanded=True):
+            qc1, qc2, qc3 = st.columns(3)
+            with qc1:
+                q_player = st.text_input("Player", key="qs_player")
+                q_stat = st.selectbox("Stat", ["birdies", "bogey_free", "fantasy_score", "strokes", "gir", "fairways", "putts", "pars"], key="qs_stat")
+            with qc2:
+                q_direction = st.selectbox("Direction", ["over", "under"], key="qs_direction")
+                q_line = st.number_input("Line", value=3.5, step=0.5, key="qs_line")
+            with qc3:
+                q_model_prob = st.number_input("Model Probability", 0.40, 0.95, 0.58, 0.01, key="qs_prob")
+                q_projection = st.number_input("Model Projection", 0.0, 100.0, 4.0, 0.1, key="qs_proj")
+                q_std = st.number_input("Projection Std Dev", 0.1, 20.0, 1.5, 0.1, key="qs_std")
+
+            if st.button("Evaluate & Place Bet", key="qs_place"):
+                if q_player:
+                    decision = engine.evaluate_bet(
+                        player=q_player,
+                        bet_type=BetType.OVER if q_direction == "over" else BetType.UNDER,
+                        stat_type=q_stat,
+                        line=q_line,
+                        direction=q_direction,
+                        model_prob=q_model_prob,
+                        model_projection=q_projection,
+                        model_std=q_std,
+                        odds_american=-110,
+                    )
+                    if decision["approved"]:
+                        bet_id = engine.place_bet(decision)
+                        st.success(f"BET PLACED: {bet_id} | {q_player} {q_direction.upper()} {q_stat} @ {q_line} | Stake: ${decision['stake']:.2f} | Edge: {(q_model_prob - decision['market_prob'])*100:.1f}%")
+                        st.json(decision["kelly_details"])
+                    else:
+                        st.error(f"BET REJECTED: {decision['rejection_reason']}")
+
+        # Pending bets with settlement
+        pending = engine.bet_logger.get_pending_bets()
+        if pending:
+            st.markdown(f"**Pending Bets ({len(pending)})**")
+            for bet in pending:
+                bc1, bc2, bc3, bc4 = st.columns([3, 1, 1, 1])
+                with bc1:
+                    st.write(f"{bet['player']} {bet['direction'].upper()} {bet['stat_type']} @ {bet['line']} — ${bet['stake']:.2f}")
+                with bc2:
+                    actual = st.number_input("Result", key=f"res_{bet['bet_id']}", value=0.0, step=0.5)
+                with bc3:
+                    if st.button("Settle", key=f"settle_{bet['bet_id']}"):
+                        result = engine.settle_bet(bet["bet_id"], actual_result=actual, closing_line=bet["line"])
+                        st.success(f"{'WON' if result['won'] else 'LOST'} | P&L: ${result['pnl']:+.2f}")
+                        st.rerun()
+                with bc4:
+                    if st.button("Void", key=f"void_{bet['bet_id']}"):
+                        from quant_system.core.types import BetStatus
+                        engine.bet_logger.settle_bet(bet["bet_id"], BetStatus.VOID, 0.0)
+                        st.rerun()
+
+        # Settled bets
+        settled = engine.bet_logger.get_settled_bets(limit=50)
+        if settled:
+            st.markdown(f"**Recent Settled Bets ({len(settled)})**")
+            sdf = pd.DataFrame(settled)[["timestamp", "player", "direction", "stat_type", "line", "stake", "edge", "status", "pnl"]]
+            sdf["edge"] = (sdf["edge"] * 100).round(1).astype(str) + "%"
+            sdf["pnl"] = sdf["pnl"].apply(lambda x: f"${x:+.2f}")
+            st.dataframe(sdf, use_container_width=True, hide_index=True)
+
+    # ── CLV TRACKER ──
+    with qs_tabs[2]:
+        st.markdown("**Closing Line Value Tracking**")
+        st.markdown('<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:10px;">CLV is the #1 predictor of long-term profitability. If you consistently beat the closing line, you have edge. If not, you don\'t.</div>', unsafe_allow_html=True)
+
+        clv_summary = engine.clv_tracker.clv_summary()
+        for window_key in ["clv_50", "clv_100", "clv_250", "clv_500"]:
+            data = clv_summary.get(window_key, {})
+            if data.get("n_bets", 0) > 0:
+                label = window_key.replace("clv_", "Last ")
+                cents = data.get("avg_clv_cents", 0)
+                beat = data.get("beat_close_pct", 0) * 100
+                trend = data.get("trend", "")
+                t_stat = data.get("clv_t_stat", 0)
+                p_val = data.get("clv_p_value", 1)
+                sig = "Yes" if p_val < 0.05 else "No"
+                color = "#00FF88" if cents > 0 else "#FF3358"
+                st.markdown(f"""
+                <div class="glass-card" style="padding:10px;margin-bottom:8px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <div>
+                            <span style="font-size:0.7rem;color:#64748b;">{label} bets (n={data['n_bets']})</span>
+                            <div style="font-size:1.1rem;font-weight:700;color:{color};">{cents:+.2f} cents/bet</div>
+                        </div>
+                        <div style="text-align:right;font-size:0.7rem;color:#94a3b8;">
+                            Beat close: {beat:.0f}% | t={t_stat:.2f} | sig: {sig} | {trend}
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        clv_by_type = engine.clv_tracker.clv_by_bet_type()
+        if clv_by_type:
+            st.markdown("**CLV by Bet Type**")
+            type_df = pd.DataFrame([
+                {"Type": k, "Avg CLV (cents)": v["avg_clv_cents"], "Beat Close %": f"{v['beat_close_pct']*100:.0f}%", "N": v["n"]}
+                for k, v in clv_by_type.items()
+            ])
+            st.dataframe(type_df, use_container_width=True, hide_index=True)
+
+    # ── EDGE VALIDATION ──
+    with qs_tabs[3]:
+        st.markdown("**Edge Validation — Do I Actually Have Edge Right Now?**")
+        if st.button("Run Edge Validation", key="qs_validate"):
+            risk_state = engine.bankroll_mgr.get_risk_state()
+            report = engine.edge_validator.validate(risk_state.bankroll, risk_state.peak_bankroll)
+
+            if report.edge_exists:
+                st.success(f"EDGE EXISTS | State: {report.system_state.value.upper()}")
+            else:
+                st.error(f"EDGE NOT CONFIRMED | State: {report.system_state.value.upper()}")
+
+            st.metric("Calibration Error (MAE)", f"{report.calibration_error:.3f}")
+            st.metric("Model ROI", f"{report.model_roi*100:.2f}%")
+            st.metric("Expected ROI", f"{report.expected_roi*100:.2f}%")
+
+            for w in report.warnings:
+                st.warning(w)
+            for a in report.actions:
+                st.error(f"Required: {a}")
+
+        # Drift detection
+        st.markdown("---")
+        st.markdown("**Model Drift Detection**")
+        if st.button("Check for Drift", key="qs_drift"):
+            from quant_system.learning.model_drift import DriftDetector
+            detector = DriftDetector(Sport.GOLF, db_path=os.path.join(os.path.dirname(__file__), "data", "quant_system.db"))
+            drift = detector.edge_decay()
+            if drift.get("edge_decay_detected"):
+                st.error(f"EDGE DECAY DETECTED: {drift.get('recommendation', '')}")
+            else:
+                st.success("No edge decay detected")
+            st.json(drift)
+
+    # ── RISK & SIZING ──
+    with qs_tabs[4]:
+        st.markdown("**Risk Management & Dynamic Kelly Sizing**")
+        risk_state = engine.bankroll_mgr.get_risk_state()
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Kelly Multiplier", f"{risk_state.kelly_multiplier:.2f}")
+        with col2:
+            st.metric("Max Single Bet", f"${risk_state.max_single_bet:.2f}")
+        with col3:
+            st.metric("Daily Loss Remaining", f"${risk_state.daily_loss_remaining:.2f}")
+
+        st.markdown("**Circuit Breakers**")
+        breakers = engine.failure_protection.check_all(risk_state)
+        for name in breakers["breakers_clear"]:
+            st.success(f"{name}: CLEAR — {breakers['details'][name].get('message', '')}")
+        for name in breakers["breakers_triggered"]:
+            st.error(f"{name}: TRIGGERED — {breakers['details'][name].get('message', '')}")
+
+        st.markdown("**Kelly Calculator**")
+        kc1, kc2 = st.columns(2)
+        with kc1:
+            test_prob = st.slider("Win Probability", 0.50, 0.90, 0.60, 0.01, key="qs_test_prob")
+            test_odds = st.number_input("Decimal Odds", 1.5, 5.0, 1.91, 0.01, key="qs_test_odds")
+        with kc2:
+            clv_data = engine.clv_tracker.rolling_clv(100)
+            cal_data = engine.calibration.compute_calibration()
+            result = engine.kelly.adaptive_stake(
+                win_prob=test_prob,
+                decimal_odds=test_odds,
+                bankroll=risk_state.bankroll,
+                risk_state=risk_state,
+                clv_avg_cents=clv_data.get("avg_clv_cents", 0),
+                calibration_mae=cal_data.get("mean_absolute_error", 0),
+            )
+            if result["blocked"]:
+                st.error(f"Blocked: {result['block_reason']}")
+            else:
+                st.metric("Recommended Stake", f"${result['stake_dollars']:.2f}")
+                st.metric("% of Bankroll", f"{result['pct_bankroll']*100:.2f}%")
+                st.metric("Edge", f"{result['edge']*100:.1f}%")
+                st.json(result["adjustments"])
+
+    # ── BACKTEST ──
+    with qs_tabs[5]:
+        st.markdown("**Monte Carlo Bankroll Simulation**")
+        st.markdown('<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:10px;">Simulate 10,000 bankroll paths to see probability of ruin, expected growth, and drawdown distribution.</div>', unsafe_allow_html=True)
+
+        bc1, bc2, bc3 = st.columns(3)
+        with bc1:
+            mc_edge = st.slider("Avg Edge (%)", 0.0, 15.0, 5.0, 0.5, key="qs_mc_edge")
+            mc_wr = st.slider("Win Rate (%)", 45.0, 70.0, 55.0, 1.0, key="qs_mc_wr")
+        with bc2:
+            mc_odds = st.number_input("Avg Odds (decimal)", 1.5, 3.0, 1.91, 0.01, key="qs_mc_odds")
+            mc_stake = st.slider("Avg Stake (% bankroll)", 0.5, 5.0, 2.0, 0.5, key="qs_mc_stake")
+        with bc3:
+            mc_bets = st.slider("Bets to Simulate", 100, 2000, 500, 50, key="qs_mc_bets")
+
+        if st.button("Run Monte Carlo (10K paths)", key="qs_run_mc"):
+            from quant_system.backtest.mc_bankroll import BankrollSimulator, MCConfig
+            sim = BankrollSimulator(MCConfig(n_bets_per_path=mc_bets, initial_bankroll=bankroll))
+            mc_result = sim.simulate(
+                avg_edge=mc_edge / 100,
+                avg_odds_decimal=mc_odds,
+                avg_stake_pct=mc_stake / 100,
+                win_rate=mc_wr / 100,
+            )
+
+            mc_cols = st.columns(4)
+            with mc_cols[0]:
+                rp = mc_result["ruin_probability"]
+                st.metric("Ruin Probability", f"{rp:.1%}", delta="SAFE" if rp < 0.05 else "DANGER", delta_color="normal" if rp < 0.05 else "inverse")
+            with mc_cols[1]:
+                st.metric("Median Final", f"${mc_result['median_final']:,.0f}")
+            with mc_cols[2]:
+                st.metric("Profitable Paths", f"{mc_result['paths_profitable']:.0%}")
+            with mc_cols[3]:
+                st.metric("Doubled Paths", f"{mc_result['paths_doubled']:.0%}")
+
+            st.markdown("**Distribution of Outcomes**")
+            dist_df = pd.DataFrame({
+                "Percentile": ["5th (worst)", "25th", "Median", "75th", "95th (best)"],
+                "Final Bankroll": [
+                    f"${mc_result['p5_final']:,.0f}",
+                    f"${mc_result['p25_final']:,.0f}",
+                    f"${mc_result['median_final']:,.0f}",
+                    f"${mc_result['p75_final']:,.0f}",
+                    f"${mc_result['p95_final']:,.0f}",
+                ],
+            })
+            st.dataframe(dist_df, use_container_width=True, hide_index=True)
+
+            st.metric("Max Drawdown (median)", f"{mc_result['max_drawdown_median']*100:.1f}%")
+            st.metric("Max Drawdown (95th pct)", f"{mc_result['max_drawdown_p95']*100:.1f}%")
+
+
+# ============================================================
+# TAB 8 — SETTINGS (Bankroll, Calibration, Logged Bets, Config)
 # ============================================================
 def tab_settings(proj_df: pd.DataFrame, settings: dict):
     """Settings tab — bankroll management, model calibration, bet logging, and configuration."""
@@ -4498,6 +4891,7 @@ def main():
         "&#128269; Player Deep Dive",
         "&#127959; Course Fit",
         "&#128176; Betting Edge",
+        "&#128202; Quant System",
         "&#9881; Settings",
     ])
 
@@ -4514,6 +4908,8 @@ def main():
     with tabs[5]:
         tab_betting_edge(proj_df, settings)
     with tabs[6]:
+        tab_quant_system(proj_df, settings)
+    with tabs[7]:
         tab_settings(proj_df, settings)
 
 
