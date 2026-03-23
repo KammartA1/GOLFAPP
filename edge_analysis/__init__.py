@@ -12,5 +12,6 @@ Usage:
 """
 
 from edge_analysis.source_registry import EdgeSourceRegistry
+from edge_analysis.attribution import EdgeAttributionEngine
 
-__all__ = ["EdgeSourceRegistry"]
+__all__ = ["EdgeSourceRegistry", "EdgeAttributionEngine"]
