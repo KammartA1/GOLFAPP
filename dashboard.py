@@ -1052,6 +1052,13 @@ COURSE_PROFILES = {
         "elevation": 10, "par": 72,
         "notes": "Hero World Challenge, Bahamas, small invitational field, ocean wind, scorable",
     },
+    "Memorial Park GC": {
+        "sg_weights": {"sg_ott": 0.22, "sg_app": 0.32, "sg_arg": 0.18, "sg_putt": 0.28},
+        "distance_bonus": 0.06, "accuracy_penalty": -0.04,
+        "bermuda_greens": True, "wind_sensitivity": 0.35,
+        "elevation": 50, "par": 70,
+        "notes": "Texas Children's Houston Open, municipal redesign by Tom Doak, long par-4s, bermuda greens, tight corridors reward driving distance + accuracy",
+    },
 }
 
 
@@ -1900,6 +1907,7 @@ COURSE_COORDS = {
     "TPC Southwind": (35.056, -89.779),
     "Castle Pines": (39.460, -104.896),
     "Renaissance Club": (56.051, -2.779),
+    "Memorial Park GC": (29.763, -95.417),
 }
 
 
@@ -2828,7 +2836,7 @@ def _get_current_week_tournaments() -> list:
         ((3, 1, 5), [("Cognizant Classic", "PGA National", "PGA")]),
         ((3, 6, 12), [("Arnold Palmer Invitational", "Bay Hill", "PGA")]),
         ((3, 13, 19), [("THE PLAYERS Championship", "TPC Sawgrass", "PGA")]),
-        ((3, 20, 26), [("Valspar Championship", "Innisbrook Copperhead", "PGA")]),
+        ((3, 20, 26), [("Texas Children's Houston Open", "Memorial Park GC", "PGA")]),
         ((3, 27, 31), [("Valero Texas Open", "TPC San Antonio", "PGA")]),
         # April
         ((4, 1, 6), [("Valero Texas Open", "TPC San Antonio", "PGA")]),
@@ -3009,6 +3017,8 @@ TOURNAMENT_TO_COURSE = {
     "BMW Championship": "Castle Pines",
     "TOUR Championship": "East Lake",
     "Cognizant Classic": "PGA National",
+    "Texas Children's Houston Open": "Memorial Park GC",
+    "Houston Open": "Memorial Park GC",
 }
 
 
@@ -3042,6 +3052,7 @@ def _resolve_espn_to_course(event_name: str, venue_name: str = "") -> str | None
             "riviera": "Riviera CC",
             "pebble beach": "Pebble Beach",
             "torrey pines": "Torrey Pines South",
+            "memorial park": "Memorial Park GC",
         }
         for alias, ckey in alias_map.items():
             if alias in venue_lower:

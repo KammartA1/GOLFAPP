@@ -38,6 +38,7 @@ TOURNAMENT_COURSE_MAP = {
     "the sentry": "Kapalua Plantation",
     "sony open in hawaii": "Waialae Country Club",
     "houston open": "Memorial Park",
+    "texas children's houston open": "Memorial Park",
     "rocket mortgage classic": "Detroit Golf Club",
     "the cj cup byron nelson": "TPC Craig Ranch",
     "zurich classic of new orleans": "TPC Louisiana",

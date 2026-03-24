@@ -201,6 +201,17 @@ COURSE_PROFILES = {
         "key_skills": ["complete_ball_striker", "clutch_putting"],
         "notes": "Tour Championship — elite field only. Complete game wins. Historical performance at East Lake in particular matters for form model."
     },
+    "Memorial Park GC": {
+        "sg_weights": {"sg_ott": 0.22, "sg_app": 0.32, "sg_atg": 0.18, "sg_putt": 0.28},
+        "distance_bonus": 0.45,
+        "accuracy_penalty": 0.55,
+        "bermuda_greens": True,
+        "elevation_ft": 50,
+        "typical_conditions": "parkland_tropical",
+        "wind_sensitivity": 0.35,
+        "key_skills": ["driving_distance", "approach_accuracy", "bermuda_putting"],
+        "notes": "Texas Children's Houston Open — Tom Doak municipal redesign. Long par-4s, bermuda greens, tight corridors reward driving distance + accuracy."
+    },
 }
 
 # ─────────────────────────────────────────────────────────────────
@@ -215,6 +226,8 @@ COURSE_ALIASES = {
     "Torrey Pines (South Course)": "Torrey Pines South",
     "Innisbrook Resort (Copperhead Course)": "Innisbrook (Copperhead)",
     "Harbour Town Golf Links": "Harbour Town",
+    "Memorial Park Golf Course": "Memorial Park GC",
+    "Memorial Park": "Memorial Park GC",
 }
 
 # ─────────────────────────────────────────────────────────────────
