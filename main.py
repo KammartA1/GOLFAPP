@@ -74,13 +74,22 @@ def cli():
 @click.option("--fd-csv", default=None, help="Path to FanDuel salary CSV")
 @click.option("--bankroll", default=1000.0, help="Current bankroll in dollars")
 @click.option("--top", default=30, help="Number of players to show in output")
-def run(event_id, course, dk_csv, fd_csv, bankroll, top):
+@click.option("--simulate/--no-simulate", default=False, help="Enable Monte Carlo tournament simulation")
+@click.option("--n-sims", default=10000, help="Number of tournament simulations (default: 10000)")
+@click.option("--sim-weight", default=0.5, type=float, help="Simulation blend weight 0-1 (default: 0.5)")
+def run(event_id, course, dk_csv, fd_csv, bankroll, top, simulate, n_sims, sim_weight):
     """Full projection run for current/specified tournament."""
     print_header()
     console.print(f"\n[bold]🔄 Running full projection pipeline...[/bold]\n")
+    if simulate:
+        console.print(f"  [cyan]Monte Carlo simulation ENABLED ({n_sims:,} sims, weight={sim_weight:.0%})[/cyan]")
 
     pipeline = DataPipeline()
-    engine   = ProjectionEngine()
+    engine   = ProjectionEngine(
+        enable_simulation=simulate,
+        n_sims=n_sims,
+        sim_weight=sim_weight,
+    )
     kelly    = KellyModel(bankroll=bankroll)
     h2h      = H2HAnalyzer()
 
@@ -134,6 +143,34 @@ def run(event_id, course, dk_csv, fd_csv, bankroll, top):
 
     top_df = proj_df[display_cols].head(top)
     console.print(top_df.to_string(index=False))
+
+    # ── Simulation Results (if enabled) ────────────────────────────────
+    if simulate and "sim_win_prob" in proj_df.columns:
+        console.print(f"\n[bold gold1]🎲 Simulation Results ({n_sims:,} tournaments)[/bold gold1]")
+
+        sim_display_cols = [c for c in [
+            "name", "win_prob", "sim_win_prob", "blended_win_prob",
+            "top10_prob", "sim_top10_prob", "blended_top10_prob",
+            "make_cut_prob", "sim_make_cut_prob", "blended_make_cut_prob",
+            "sim_avg_finish", "engine_agreement",
+        ] if c in proj_df.columns]
+
+        sim_top = proj_df[sim_display_cols].head(top)
+        console.print(sim_top.to_string(index=False))
+
+        # ── Flag Disagreements (opportunities) ─────────────────────────
+        if "engine_agreement" in proj_df.columns:
+            disagreements = proj_df[proj_df["engine_agreement"] < 0.7].sort_values("engine_agreement")
+            if not disagreements.empty:
+                console.print(f"\n[bold yellow]⚠️  Engine Disagreements (analytical vs simulation)[/bold yellow]")
+                console.print("[dim]These players have >30% divergence — investigate for hidden edges.[/dim]")
+                disagree_cols = [c for c in [
+                    "name", "win_prob", "sim_win_prob", "make_cut_prob",
+                    "sim_make_cut_prob", "engine_agreement",
+                ] if c in disagreements.columns]
+                console.print(disagreements[disagree_cols].head(15).to_string(index=False))
+            else:
+                console.print("\n[green]✅ Analytical and simulation engines are in strong agreement.[/green]")
 
     # ── GPP Targets ───────────────────────────────────────────────────
     console.print("\n[bold]🎯 GPP Leverage Targets (high model, low ownership)[/bold]")

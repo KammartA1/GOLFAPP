@@ -108,6 +108,7 @@ class QuantEngine:
         odds_american: int = -110,
         confidence_score: float = 0.0,
         engine_agreement: float = 0.0,
+        sim_prob: Optional[float] = None,
         features_snapshot: dict | None = None,
     ) -> dict:
         """Evaluate whether to place a bet and how much to stake.
@@ -115,9 +116,16 @@ class QuantEngine:
         This is THE decision function. It checks:
         1. System state (are we allowed to bet?)
         2. Circuit breakers (any triggered?)
-        3. Sharp money (does it agree?)
-        4. Kelly sizing (how much?)
-        5. Exposure limits (room for this bet?)
+        3. Simulation agreement (analytical vs Monte Carlo)
+        4. Sharp money (does it agree?)
+        5. Kelly sizing (how much?)
+        6. Exposure limits (room for this bet?)
+
+        Args:
+            sim_prob: Optional simulation-derived probability. When provided,
+                used as an independent confidence signal alongside model_prob.
+                If sim_prob and model_prob disagree by >10%: reduce confidence.
+                If they agree strongly: boost confidence.
 
         Returns:
             {
@@ -134,6 +142,7 @@ class QuantEngine:
                 "line": float,
                 "direction": str,
                 "model_prob": float,
+                "sim_prob": float or None,
                 "model_projection": float,
                 "model_std": float,
                 "odds_american": int,
@@ -152,6 +161,31 @@ class QuantEngine:
 
         market_prob = 1.0 / odds_decimal
 
+        # ── Simulation agreement: adjust confidence and engine_agreement ──
+        if sim_prob is not None:
+            prob_diff = abs(model_prob - sim_prob)
+            # Compute engine_agreement from analytical vs simulation divergence
+            # 0.0 diff = 1.0 agreement, 0.20+ diff = 0.0 agreement
+            engine_agreement = max(0.0, 1.0 - (prob_diff / 0.20))
+            engine_agreement = round(engine_agreement, 3)
+
+            if prob_diff > 0.10:
+                # Significant disagreement (>10%): reduce confidence
+                # Scale penalty: 10% diff -> mild, 20%+ diff -> strong
+                penalty_factor = min(prob_diff / 0.20, 1.0)
+                confidence_score = max(0.0, confidence_score - 0.15 * penalty_factor)
+                logger.info(
+                    "Sim disagreement for %s: model=%.3f sim=%.3f diff=%.3f -> confidence reduced",
+                    player, model_prob, sim_prob, prob_diff,
+                )
+            elif prob_diff < 0.05:
+                # Strong agreement (<5% difference): boost confidence
+                confidence_score = min(1.0, confidence_score + 0.10)
+                logger.info(
+                    "Sim agreement for %s: model=%.3f sim=%.3f -> confidence boosted",
+                    player, model_prob, sim_prob,
+                )
+
         # 1. Get current risk state
         system_state = self.edge_validator.get_current_state()
         risk_state = self.bankroll_mgr.get_risk_state(system_state)
@@ -163,6 +197,7 @@ class QuantEngine:
             "line": line,
             "direction": direction,
             "model_prob": model_prob,
+            "sim_prob": sim_prob,
             "market_prob": market_prob,
             "model_projection": model_projection,
             "model_std": model_std,
