@@ -106,14 +106,28 @@ html, body, [class*="css"] {
 }
 
 /* ── Hide Streamlit chrome ──────────────────────────────── */
-#MainMenu, footer, header { visibility: hidden; }
+#MainMenu, footer { visibility: hidden; }
 [data-testid="stToolbar"] { display: none; }
 [data-testid="stDecoration"] { display: none; }
+[data-testid="stHeader"] { background: transparent !important; }
 
-/* ── Sidebar ────────────────────────────────────────────── */
+/* ── Sidebar — force always visible ────────────────────── */
 [data-testid="stSidebar"] {
     background: linear-gradient(180deg, #0c1220 0%, #0a0f1a 100%) !important;
     border-right: 1px solid rgba(255,255,255,0.06);
+    min-width: 320px !important;
+    width: 320px !important;
+}
+[data-testid="stSidebar"][aria-expanded="false"] {
+    min-width: 320px !important;
+    width: 320px !important;
+    margin-left: 0 !important;
+    transform: none !important;
+    display: block !important;
+    visibility: visible !important;
+}
+[data-testid="collapsedControl"] {
+    display: none;
 }
 [data-testid="stSidebar"] .stMarkdown p,
 [data-testid="stSidebar"] .stMarkdown li,
