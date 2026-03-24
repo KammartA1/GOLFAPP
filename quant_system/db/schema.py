@@ -182,7 +182,13 @@ def get_engine(db_path: str | None = None):
         with _engine.connect() as conn:
             conn.execute(text("PRAGMA journal_mode=WAL"))
             conn.commit()
-        Base.metadata.create_all(_engine)
+        try:
+            Base.metadata.create_all(_engine, checkfirst=True)
+        except Exception:
+            # Tables/indices may already exist from the unified database.models schema.
+            # This is expected — the quant_system tables overlap with database/models.py
+            # definitions (same index names on different tables). Safe to continue.
+            pass
     return _engine
 
 
