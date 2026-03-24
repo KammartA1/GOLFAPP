@@ -5787,122 +5787,323 @@ def tab_verdict(proj_df: pd.DataFrame, settings: dict):
 
 
 # ============================================================
-# ============================================================
 # TAB — NEXT WEEK PREP (Pre-tournament analysis before lines drop)
 # ============================================================
 def tab_next_week_prep(proj_df: pd.DataFrame, settings: dict):
-    """Pre-tournament preparation — run projections + simulation for next week before lines are released."""
-    st.markdown(section_header("Next Week Prep", "&#128197;", "Get Ahead Before Lines Drop"), unsafe_allow_html=True)
+    """Pre-tournament preparation — runs full quant engine projections + simulations
+    for next week's tournament before official lines drop."""
+    st.markdown(section_header("Next Week Prep", "&#128197;", "Pre-Tournament Analysis Pipeline"), unsafe_allow_html=True)
 
+    # Detect next week's tournament
     next_tournaments = _get_next_week_tournaments()
-    current_tournaments = _get_current_week_tournaments()
 
     if not next_tournaments:
-        st.info("No tournament found in schedule for next week. Check back closer to the next event.")
+        st.warning("No upcoming tournament found in the schedule for next week. "
+                    "The schedule may need updating, or we may be in an off-week.")
         return
 
-    next_t = next_tournaments[0]
+    tourney = next_tournaments[0]
+    t_name = tourney["tournament"]
+    t_course = tourney["course"]
+    t_tour = tourney["tour"]
+
+    # Calculate next week dates (Thursday-Sunday)
+    days_until_thursday = (3 - datetime.now().weekday()) % 7
+    if days_until_thursday == 0:
+        days_until_thursday = 7
+    next_week_start = datetime.now() + timedelta(days=days_until_thursday)
+    next_week_end = next_week_start + timedelta(days=3)
+
+    # Tournament Info Header
     st.markdown(f"""
-    <div class="glass-card" style="padding:16px;margin-bottom:16px;">
-        <div style="font-size:1.1rem;font-weight:700;color:#e2e8f0;">
-            Next Up: {next_t['tournament']}
-        </div>
-        <div style="font-size:0.85rem;color:#94a3b8;margin-top:4px;">
-            Course: {next_t['course']} &bull; Tour: {next_t['tour']}
-        </div>
-        <div style="font-size:0.75rem;color:#fbbf24;margin-top:8px;">
-            Official lines not yet available — these are preliminary projections based on current SG data and course fit.
+    <div class="glass-card" style="padding:20px;margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+                <div style="font-size:0.7rem;color:#64748b;text-transform:uppercase;letter-spacing:1px;">Next Tournament</div>
+                <div style="font-size:1.4rem;font-weight:700;color:#f0f0f0;margin:4px 0;">{t_name}</div>
+                <div style="font-size:0.85rem;color:#94a3b8;">{t_course} &middot; {t_tour}</div>
+            </div>
+            <div style="text-align:right;">
+                <div style="font-size:0.7rem;color:#64748b;">Projected Dates</div>
+                <div style="font-size:0.9rem;color:#94a3b8;">{next_week_start.strftime('%b %d')} — {next_week_end.strftime('%b %d, %Y')}</div>
+            </div>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Use the current field as a proxy (most players carry over week to week)
+    st.markdown(
+        '<div style="background:rgba(234,179,8,0.1);border:1px solid rgba(234,179,8,0.3);border-radius:8px;'
+        'padding:12px 16px;margin-bottom:16px;font-size:0.82rem;color:#fbbf24;">'
+        '&#9888; <b>Official lines not yet available</b> — these are preliminary projections based on '
+        'SG data and course fit analysis. Use for early field assessment and preparation only.</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Check if we have projection data to work with
     if proj_df is None or proj_df.empty:
-        st.warning("No projection data loaded. Load tournament data first.")
+        st.info("Load player data first (via sidebar data sources) to run next-week projections.")
         return
 
-    prep_tabs = st.tabs(["Power Rankings", "Tournament Simulation", "Course Fit Preview", "Early Value IDs"])
+    prep_tabs = st.tabs(["Power Rankings", "Tournament Simulation", "Course Fit", "Early Value"])
 
+    # Re-build projection table with the NEXT tournament's course
+    with st.spinner(f"Building projections for {t_name} at {t_course}..."):
+        try:
+            next_proj_df = _build_projection_table(proj_df.copy(), t_course)
+        except Exception:
+            next_proj_df = proj_df.copy()
+
+    # ── Power Rankings ──
     with prep_tabs[0]:
-        st.markdown("**Preliminary Power Rankings (SG-Based)**")
-        st.markdown(f"<div style='font-size:0.7rem;color:#94a3b8;'>Based on current SG data projected to {next_t['course']}</div>", unsafe_allow_html=True)
-        rank_cols = ["player", "sg_regressed", "win_prob", "top10_prob", "cut_prob"]
-        display_cols = [c for c in rank_cols if c in proj_df.columns]
-        if display_cols:
-            rank_df = proj_df[display_cols].head(30).copy()
-            rank_df.columns = [c.replace("_", " ").title() for c in rank_df.columns]
-            st.dataframe(rank_df, use_container_width=True, hide_index=False)
+        st.markdown(f"**SG-Based Power Rankings — {t_name}**")
+        st.markdown(f'<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:12px;">'
+                    f'Rankings adjusted for course fit at {t_course}.</div>', unsafe_allow_html=True)
 
+        if len(next_proj_df) > 0:
+            top = next_proj_df.iloc[0]
+            cols = st.columns(4)
+            with cols[0]:
+                st.markdown(metric_card("#1 Ranked", str(top["player"]),
+                            f"SG: {top['sg_regressed']:.2f}", "positive", "green"), unsafe_allow_html=True)
+            with cols[1]:
+                avg_sg = next_proj_df["sg_regressed"].mean()
+                st.markdown(metric_card("Field Avg SG", f"{avg_sg:.2f}",
+                            f"{len(next_proj_df)} players", "neutral", "blue"), unsafe_allow_html=True)
+            with cols[2]:
+                if "edge" in next_proj_df.columns:
+                    best_edge = next_proj_df["edge"].max()
+                    best_player = next_proj_df.loc[next_proj_df["edge"].idxmax(), "player"]
+                    st.markdown(metric_card("Best Edge", f"{best_edge*100:.1f}%",
+                                str(best_player), "positive", "amber"), unsafe_allow_html=True)
+                else:
+                    st.markdown(metric_card("Best Edge", "N/A",
+                                "No lines available", "neutral", "amber"), unsafe_allow_html=True)
+            with cols[3]:
+                fs_adj = field_strength_adjustment(next_proj_df["sg_regressed"].tolist())
+                st.markdown(metric_card("Field Strength", fs_adj["strength_label"],
+                            f"Factor: {fs_adj['adjustment_factor']:.3f}", "neutral", "purple"), unsafe_allow_html=True)
+
+            st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+
+            # Rankings table
+            rank_cols = ["player", "sg_regressed"]
+            if "course_delta" in next_proj_df.columns:
+                rank_cols.append("course_delta")
+            for c in ["win_prob", "top5_prob", "top10_prob", "cut_prob"]:
+                if c in next_proj_df.columns:
+                    rank_cols.append(c)
+
+            rank_df = next_proj_df[rank_cols].head(30).copy()
+            rename_map = {
+                "player": "Player", "sg_regressed": "SG (adj)", "course_delta": "Course Fit",
+                "win_prob": "Win%", "top5_prob": "Top 5%", "top10_prob": "Top 10%", "cut_prob": "Cut%",
+            }
+            rank_df = rank_df.rename(columns=rename_map)
+            for pct_col in ["Win%", "Top 5%", "Top 10%", "Cut%"]:
+                if pct_col in rank_df.columns:
+                    rank_df[pct_col] = (rank_df[pct_col] * 100).round(1)
+            st.dataframe(rank_df, use_container_width=True, height=600)
+
+    # ── Tournament Simulation ──
     with prep_tabs[1]:
-        st.markdown("**Full Tournament Simulation — 10,000 Tournaments**")
+        st.markdown(f"**Tournament Simulation — {t_name}**")
+        st.markdown(f'<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:12px;">'
+                    f'Monte Carlo simulation of full tournament outcomes at {t_course}.</div>', unsafe_allow_html=True)
+
+        n_sims_prep = st.slider("Simulations", 1000, 10000, 5000, 1000, key="prep_sim_n")
+
         if st.button("Run Pre-Tournament Simulation", key="run_next_week_sim", type="primary"):
-            with st.spinner(f"Simulating 10,000 tournaments at {next_t['course']}..."):
+            with st.spinner(f"Simulating {n_sims_prep} tournaments at {t_course}..."):
                 try:
                     from simulation.pipeline_bridge import SimulationBridge
-                    sim_bridge = SimulationBridge(n_sims=10000)
+                    sim_bridge = SimulationBridge(n_sims=n_sims_prep)
                     sim_df = sim_bridge.run_tournament_simulation(
-                        field_projections=proj_df,
-                        course_name=next_t["course"],
+                        field_projections=next_proj_df,
+                        course_name=t_course,
                     )
-                    st.success(f"Simulation complete — {len(sim_df)} players simulated")
-                    # Display simulation results
-                    sim_display_cols = ["name", "sim_win_prob", "sim_top5_prob", "sim_top10_prob",
-                                       "sim_top20_prob", "sim_make_cut_prob", "sim_avg_finish", "sim_avg_score"]
-                    available = [c for c in sim_display_cols if c in sim_df.columns]
-                    if available:
-                        show_df = sim_df[available].head(40).copy()
-                        show_df.columns = [c.replace("sim_", "").replace("_", " ").title() for c in show_df.columns]
-                        st.dataframe(show_df, use_container_width=True, hide_index=True)
-                    st.session_state["next_week_sim"] = sim_df
+
+                    if sim_df is not None and not sim_df.empty:
+                        st.success(f"Simulation complete! {n_sims_prep} tournaments simulated.")
+
+                        sim_results = []
+                        name_col = "name" if "name" in sim_df.columns else "player"
+                        for _, row in sim_df.head(30).iterrows():
+                            sim_results.append({
+                                "Player": row.get(name_col, ""),
+                                "Win %": f"{row.get('sim_win_prob', row.get('win_prob', 0))*100:.2f}%",
+                                "Top 5 %": f"{row.get('sim_top5_prob', row.get('top5_prob', 0))*100:.1f}%",
+                                "Top 10 %": f"{row.get('sim_top10_prob', row.get('top10_prob', 0))*100:.1f}%",
+                                "Top 20 %": f"{row.get('sim_top20_prob', row.get('top20_prob', 0))*100:.1f}%",
+                                "Make Cut %": f"{row.get('sim_make_cut_prob', row.get('make_cut_prob', row.get('cut_prob', 0)))*100:.0f}%",
+                                "Avg Finish": f"#{row.get('sim_avg_finish', row.get('avg_finish', 0)):.0f}",
+                            })
+
+                        if sim_results:
+                            st.dataframe(pd.DataFrame(sim_results), use_container_width=True, hide_index=True)
+
+                        st.session_state["next_week_sim"] = sim_df
+                    else:
+                        st.warning("Simulation returned no results.")
                 except Exception as e:
-                    st.error(f"Simulation failed: {e}")
-        elif "next_week_sim" in st.session_state:
-            sim_df = st.session_state["next_week_sim"]
-            sim_display_cols = ["name", "sim_win_prob", "sim_top5_prob", "sim_top10_prob",
-                               "sim_top20_prob", "sim_make_cut_prob", "sim_avg_finish"]
-            available = [c for c in sim_display_cols if c in sim_df.columns]
-            if available:
-                show_df = sim_df[available].head(40).copy()
-                show_df.columns = [c.replace("sim_", "").replace("_", " ").title() for c in show_df.columns]
-                st.dataframe(show_df, use_container_width=True, hide_index=True)
+                    st.error(f"Simulation error: {e}")
 
+        # Show previously cached sim results with win probability chart
+        if "next_week_sim" in st.session_state:
+            cached_sim = st.session_state["next_week_sim"]
+            if cached_sim is not None and not cached_sim.empty:
+                st.markdown("**Win Probability Distribution (Top 15)**")
+                name_col = "name" if "name" in cached_sim.columns else "player"
+                top15 = cached_sim.head(15)
+                win_col = "sim_win_prob" if "sim_win_prob" in top15.columns else "win_prob"
+                if win_col in top15.columns:
+                    fig = go.Figure(go.Bar(
+                        x=top15[name_col],
+                        y=top15[win_col] * 100,
+                        marker_color="#4ade80",
+                    ))
+                    fig.update_layout(
+                        height=350,
+                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                        xaxis_title="Player", yaxis_title="Win Probability (%)",
+                        font=dict(color="#e2e8f0"),
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+    # ── Course Fit ──
     with prep_tabs[2]:
-        st.markdown(f"**Course Fit Preview — {next_t['course']}**")
-        if "course_delta" in proj_df.columns:
-            fit_df = proj_df[["player", "sg_regressed", "course_delta"]].copy()
-            fit_df = fit_df.sort_values("course_delta", ascending=False).head(30)
-            fit_df.columns = ["Player", "SG Total", "Course Fit Delta"]
-            st.dataframe(fit_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("Course fit data not available for next week's course yet.")
+        st.markdown(f"**Course Fit Analysis — {t_course}**")
 
+        cp = COURSE_PROFILES.get(t_course, {})
+        weights = cp.get("sg_weights", SG_WEIGHTS)
+
+        if cp:
+            cols = st.columns(4)
+            label_map = {"sg_ott": "Off Tee", "sg_app": "Approach", "sg_arg": "Around Green", "sg_putt": "Putting"}
+            with cols[0]:
+                dominant = max(weights, key=weights.get)
+                st.markdown(metric_card("Key Skill", label_map.get(dominant, dominant),
+                            f"Weight: {weights[dominant]:.0%}", "positive", "green"), unsafe_allow_html=True)
+            with cols[1]:
+                st.markdown(metric_card("Distance Bonus", f"{cp.get('distance_bonus', 0):+.0%}",
+                            "Favors long hitters" if cp.get("distance_bonus", 0) > 0 else "Neutral",
+                            "positive" if cp.get("distance_bonus", 0) > 0 else "neutral", "blue"), unsafe_allow_html=True)
+            with cols[2]:
+                st.markdown(metric_card("Wind Factor", f"{cp.get('wind_sensitivity', 0):.1f}",
+                            "High" if cp.get("wind_sensitivity", 0) > 0.5 else "Moderate",
+                            "negative" if cp.get("wind_sensitivity", 0) > 0.5 else "neutral", "amber"), unsafe_allow_html=True)
+            with cols[3]:
+                grass = "Bermuda" if cp.get("bermuda_greens", False) else "Bent/Poa"
+                st.markdown(metric_card("Green Type", grass,
+                            f"Elev: {cp.get('elevation', 0)}ft", "neutral", "green"), unsafe_allow_html=True)
+
+            st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+
+            # Weight comparison chart
+            default_w = SG_WEIGHTS
+            comp_data = []
+            for cat in ["sg_ott", "sg_app", "sg_arg", "sg_putt"]:
+                comp_data.append({
+                    "Category": label_map.get(cat, cat),
+                    "Course Weight": weights.get(cat, 0),
+                    "Default Weight": default_w.get(cat, 0),
+                })
+            comp_df = pd.DataFrame(comp_data)
+
+            fig = go.Figure()
+            fig.add_trace(go.Bar(x=comp_df["Category"], y=comp_df["Course Weight"],
+                                 name=t_course, marker_color="#4ade80"))
+            fig.add_trace(go.Bar(x=comp_df["Category"], y=comp_df["Default Weight"],
+                                 name="Tour Default", marker_color="rgba(255,255,255,0.2)"))
+            fig.update_layout(barmode="group", height=300,
+                              paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                              font=dict(color="#e2e8f0"))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info(f"No detailed course profile found for {t_course}. "
+                    "Default SG weights will be used for projections.")
+
+        # Top course fit players
+        if "course_delta" in next_proj_df.columns:
+            st.markdown("**Top Course Fit Players**")
+            fit_df = next_proj_df.nlargest(15, "course_delta")[["player", "sg_regressed", "course_delta"]].copy()
+            fit_df.columns = ["Player", "SG (adj)", "Course Fit Delta"]
+            st.dataframe(fit_df, use_container_width=True, hide_index=True)
+
+    # ── Early Value ──
     with prep_tabs[3]:
-        st.markdown("**Early Value Identification**")
-        st.markdown("""
-        <div style="font-size:0.8rem;color:#94a3b8;margin-bottom:12px;">
-            Players ranked by projected probability who may be undervalued when lines open.
-            Use these as watchlist targets when PrizePicks releases lines.
-        </div>
-        """, unsafe_allow_html=True)
-        if "win_prob" in proj_df.columns and "top10_prob" in proj_df.columns:
-            value_df = proj_df[["player", "sg_regressed", "win_prob", "top10_prob", "cut_prob"]].head(25).copy()
-            value_df["value_score"] = (
-                value_df["sg_regressed"].rank(ascending=False, pct=True) * 0.4
-                + value_df["top10_prob"].rank(ascending=False, pct=True) * 0.3
-                + value_df["cut_prob"].rank(ascending=False, pct=True) * 0.3
-            )
-            value_df = value_df.sort_values("value_score", ascending=False)
-            value_df.columns = ["Player", "SG Total", "Win%", "Top 10%", "Cut%", "Value Score"]
-            for col in ["Win%", "Top 10%", "Cut%"]:
-                value_df[col] = (value_df[col] * 100).round(2).astype(str) + "%"
-            value_df["Value Score"] = value_df["Value Score"].round(3)
-            st.dataframe(value_df, use_container_width=True, hide_index=True)
-            st.markdown("""
-            <div style="font-size:0.7rem;color:#60a5fa;margin-top:8px;">
-                Tip: When lines drop, compare these projections against the opening lines.
-                Players with high value scores whose lines seem soft are your primary targets.
-            </div>
-            """, unsafe_allow_html=True)
+        st.markdown(f"**Early Value Identification — {t_name}**")
+        st.markdown(
+            '<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:12px;">'
+            'Players projected to outperform their typical market pricing based on SG model, '
+            'course fit, and historical tournament performance. Target these when lines drop.</div>',
+            unsafe_allow_html=True,
+        )
+
+        # Identify early value: players with strong SG + positive course fit
+        value_df = next_proj_df.copy()
+        if "course_delta" in value_df.columns:
+            value_df["value_score"] = value_df["sg_regressed"] + value_df["course_delta"] * 2
+        else:
+            value_df["value_score"] = value_df["sg_regressed"]
+        value_df = value_df.sort_values("value_score", ascending=False)
+
+        st.markdown("**High-Value Targets (SG + Course Fit)**")
+        val_rows = []
+        for _, row in value_df.head(15).iterrows():
+            sg = row.get("sg_regressed", 0)
+            cd = row.get("course_delta", 0)
+            win_p = row.get("win_prob", 0)
+            cut_p = row.get("cut_prob", 0)
+
+            vs = row["value_score"]
+            if vs > 2.0:
+                tier = "Elite"
+            elif vs > 1.0:
+                tier = "Strong"
+            elif vs > 0.5:
+                tier = "Moderate"
+            else:
+                tier = "Speculative"
+
+            val_rows.append({
+                "Player": row["player"],
+                "SG (adj)": f"{sg:.2f}",
+                "Course Fit": f"{cd:+.2f}" if cd != 0 else "0.00",
+                "Value Score": f"{vs:.2f}",
+                "Win%": f"{win_p*100:.2f}%" if win_p > 0 else "--",
+                "Cut%": f"{cut_p*100:.0f}%" if cut_p > 0 else "--",
+                "Tier": tier,
+            })
+
+        if val_rows:
+            vdf = pd.DataFrame(val_rows)
+            st.dataframe(vdf, use_container_width=True, hide_index=True)
+
+        # Value distribution chart
+        st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+        st.markdown("**Value Score Distribution (Top 20)**")
+        top20 = value_df.head(20)
+        fig = go.Figure(go.Bar(
+            x=top20["player"],
+            y=top20["value_score"],
+            marker_color=["#00FF88" if v > 2 else "#4ade80" if v > 1 else "#fbbf24" if v > 0.5 else "#94a3b8"
+                          for v in top20["value_score"]],
+        ))
+        fig.update_layout(
+            height=350,
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            xaxis_title="Player", yaxis_title="Value Score (SG + 2x Course Fit)",
+            font=dict(color="#e2e8f0"),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown(
+            '<div style="font-size:0.75rem;color:#64748b;margin-top:8px;">'
+            'Value Score = SG (adjusted) + 2x Course Fit Delta. Higher scores indicate '
+            'players likely undervalued by the market at this course. '
+            'Cross-reference with official lines when they become available.</div>',
+            unsafe_allow_html=True,
+        )
 
 
 # MAIN APPLICATION
