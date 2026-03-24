@@ -25,6 +25,7 @@ from data.scrapers.datagolf import DataGolfClient
 from data.storage.database import get_session, Player, Tournament, Projection, SGStats
 from config.settings import DATAGOLF_ENABLED
 from config.courses import get_course_profile
+from simulation.pipeline_bridge import SimulationBridge
 
 log = logging.getLogger(__name__)
 
@@ -164,11 +165,14 @@ class ProjectionEngine:
     Orchestrates the full projection pipeline for a tournament.
     """
 
-    def __init__(self):
+    def __init__(self, enable_simulation: bool = False, n_sims: int = 10000, sim_weight: float = 0.5):
         self.sg_model   = SGModel()
         self.own_model  = OwnershipModel()
         self.weather    = WeatherModel()
         self.datagolf   = DataGolfClient()
+        self.enable_simulation = enable_simulation
+        self.sim_weight = sim_weight
+        self.sim_bridge = SimulationBridge(n_sims=n_sims) if enable_simulation else None
 
     def run(
         self,
@@ -298,10 +302,27 @@ class ProjectionEngine:
             df["proj_ownership"] = own_df["proj_ownership"].values
             df["leverage_score"]  = own_df.get("leverage_score", pd.Series([0]*len(df))).values
 
-        # ── Step 9: Sort and finalize ──────────────────────────────────────
+        # ── Step 9: Tournament Simulation (if enabled) ──────────────────────
+        if self.enable_simulation and self.sim_bridge is not None:
+            try:
+                log.info("Running tournament simulation (%d sims)...", self.sim_bridge.n_sims)
+                sim_df = self.sim_bridge.run_tournament_simulation(
+                    field_projections=df,
+                    course_name=course_name,
+                )
+                df = self.sim_bridge.blend_projections(
+                    analytical=df,
+                    simulated=sim_df,
+                    sim_weight=self.sim_weight,
+                )
+                log.info("Simulation blended into projections (weight=%.0f%%)", self.sim_weight * 100)
+            except Exception as e:
+                log.warning(f"Tournament simulation failed (non-fatal): {e}")
+
+        # ── Step 10: Sort and finalize ──────────────────────────────────────
         df = df.sort_values("proj_sg_total", ascending=False).reset_index(drop=True)
 
-        log.info(f"✅ Projections complete: {len(df)} players | "
+        log.info(f"Projections complete: {len(df)} players | "
                  f"Leader: {df.iloc[0]['name']} ({df.iloc[0]['proj_sg_total']:+.3f} SG)")
         return df
 
