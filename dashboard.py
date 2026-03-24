@@ -106,27 +106,14 @@ html, body, [class*="css"] {
 }
 
 /* ── Hide Streamlit chrome ──────────────────────────────── */
-#MainMenu, footer { visibility: hidden; }
+#MainMenu, footer, header { visibility: hidden; }
 [data-testid="stToolbar"] { display: none; }
 [data-testid="stDecoration"] { display: none; }
 
-/* ── Sidebar — permanently open, no collapse ───────────── */
+/* ── Sidebar ────────────────────────────────────────────── */
 [data-testid="stSidebar"] {
     background: linear-gradient(180deg, #0c1220 0%, #0a0f1a 100%) !important;
     border-right: 1px solid rgba(255,255,255,0.06);
-    min-width: 300px !important;
-    max-width: 300px !important;
-    width: 300px !important;
-    transform: none !important;
-    position: relative !important;
-}
-[data-testid="stSidebar"] > div:first-child {
-    width: 300px !important;
-}
-/* Hide the collapse (X) button */
-[data-testid="stSidebar"] button[kind="header"],
-[data-testid="stSidebarCollapseButton"] {
-    display: none !important;
 }
 [data-testid="stSidebar"] .stMarkdown p,
 [data-testid="stSidebar"] .stMarkdown li,
@@ -1065,6 +1052,48 @@ COURSE_PROFILES = {
         "elevation": 10, "par": 72,
         "notes": "Hero World Challenge, Bahamas, small invitational field, ocean wind, scorable",
     },
+    "Memorial Park GC": {
+        "sg_weights": {"sg_ott": 0.22, "sg_app": 0.32, "sg_arg": 0.18, "sg_putt": 0.28},
+        "distance_bonus": 0.06, "accuracy_penalty": -0.04,
+        "bermuda_greens": True, "wind_sensitivity": 0.35,
+        "elevation": 50, "par": 70,
+        "notes": "Texas Children's Houston Open, municipal redesign by Tom Doak, long par-4s, bermuda greens, tight corridors reward driving distance + accuracy",
+    },
+    "Aronimink GC": {
+        "sg_weights": {"sg_ott": 0.20, "sg_app": 0.32, "sg_arg": 0.18, "sg_putt": 0.30},
+        "distance_bonus": 0.05, "accuracy_penalty": -0.05,
+        "bermuda_greens": False, "wind_sensitivity": 0.30,
+        "elevation": 400, "par": 70,
+        "notes": "2026 PGA Championship, classic Donald Ross design, tight tree-lined, bentgrass, precise iron play and scrambling rewarded",
+    },
+    "Shinnecock Hills": {
+        "sg_weights": {"sg_ott": 0.17, "sg_app": 0.30, "sg_arg": 0.22, "sg_putt": 0.31},
+        "distance_bonus": 0.02, "accuracy_penalty": -0.05,
+        "bermuda_greens": False, "wind_sensitivity": 0.75,
+        "elevation": 50, "par": 70,
+        "notes": "2026 U.S. Open, links-influenced, coastal wind, fescue, firm and fast, complete ball-striking test",
+    },
+    "Royal Birkdale": {
+        "sg_weights": {"sg_ott": 0.18, "sg_app": 0.28, "sg_arg": 0.23, "sg_putt": 0.31},
+        "distance_bonus": 0.03, "accuracy_penalty": -0.05,
+        "bermuda_greens": False, "wind_sensitivity": 0.85,
+        "elevation": 15, "par": 70,
+        "notes": "2026 Open Championship, English links, dune-lined fairways, pot bunkers, heavy wind, scrambling critical",
+    },
+    "TPC Toronto": {
+        "sg_weights": {"sg_ott": 0.18, "sg_app": 0.30, "sg_arg": 0.18, "sg_putt": 0.34},
+        "distance_bonus": 0.04, "accuracy_penalty": -0.03,
+        "bermuda_greens": False, "wind_sensitivity": 0.35,
+        "elevation": 300, "par": 72,
+        "notes": "RBC Canadian Open, Osprey Valley, heathland-style layout, bentgrass, balanced test",
+    },
+    "Bellerive CC": {
+        "sg_weights": {"sg_ott": 0.20, "sg_app": 0.30, "sg_arg": 0.17, "sg_putt": 0.33},
+        "distance_bonus": 0.06, "accuracy_penalty": -0.04,
+        "bermuda_greens": False, "wind_sensitivity": 0.30,
+        "elevation": 500, "par": 72,
+        "notes": "2026 BMW Championship, long layout, bentgrass, Midwest humidity, rewards power and precision",
+    },
 }
 
 
@@ -1913,6 +1942,29 @@ COURSE_COORDS = {
     "TPC Southwind": (35.056, -89.779),
     "Castle Pines": (39.460, -104.896),
     "Renaissance Club": (56.051, -2.779),
+    "Memorial Park GC": (29.763, -95.417),
+    "PGA West Stadium": (33.717, -116.300),
+    "Vidanta Vallarta": (20.672, -105.296),
+    "TPC Louisiana": (29.890, -90.089),
+    "TPC Craig Ranch": (33.083, -96.717),
+    "TPC Twin Cities": (44.880, -93.220),
+    "TPC Deere Run": (41.411, -90.427),
+    "Detroit GC": (42.423, -83.140),
+    "CC of Jackson": (32.330, -90.140),
+    "TPC Summerlin": (36.153, -115.290),
+    "Accordia Golf": (35.673, 140.044),
+    "El Cardonal": (22.881, -109.930),
+    "Port Royal": (32.254, -64.835),
+    "Sea Island": (31.155, -81.385),
+    "Albany GC": (24.997, -77.525),
+    "Royal Montreal": (45.463, -73.945),
+    "Aronimink GC": (39.952, -75.393),
+    "Shinnecock Hills": (40.893, -72.442),
+    "Royal Birkdale": (53.563, -3.042),
+    "TPC Toronto": (43.798, -79.967),
+    "Bellerive CC": (38.611, -90.381),
+    "Valhalla": (38.253, -85.520),
+    "Southern Hills": (36.115, -95.959),
 }
 
 
@@ -2824,6 +2876,7 @@ def _get_current_week_tournaments() -> list:
     month, day = today.month, today.day
 
     # 2025-2026 PGA Tour schedule (approximate week windows)
+    # Updated for 2026 season with correct venues and dates
     schedule = [
         # January
         ((1, 2, 8), [("The Sentry", "Kapalua Plantation", "PGA")]),
@@ -2841,7 +2894,7 @@ def _get_current_week_tournaments() -> list:
         ((3, 1, 5), [("Cognizant Classic", "PGA National", "PGA")]),
         ((3, 6, 12), [("Arnold Palmer Invitational", "Bay Hill", "PGA")]),
         ((3, 13, 19), [("THE PLAYERS Championship", "TPC Sawgrass", "PGA")]),
-        ((3, 20, 26), [("Valspar Championship", "Innisbrook Copperhead", "PGA")]),
+        ((3, 20, 26), [("Texas Children's Houston Open", "Memorial Park GC", "PGA")]),
         ((3, 27, 31), [("Valero Texas Open", "TPC San Antonio", "PGA")]),
         # April
         ((4, 1, 6), [("Valero Texas Open", "TPC San Antonio", "PGA")]),
@@ -2852,26 +2905,27 @@ def _get_current_week_tournaments() -> list:
         # May
         ((5, 1, 4), [("THE CJ CUP Byron Nelson", "TPC Craig Ranch", "PGA")]),
         ((5, 5, 11), [("Wells Fargo Championship", "Quail Hollow", "PGA")]),
-        ((5, 12, 18), [("PGA Championship", "Quail Hollow", "Major")]),
+        ((5, 12, 18), [("PGA Championship", "Aronimink GC", "Major")]),
         ((5, 19, 25), [("Charles Schwab Challenge", "Colonial CC", "PGA")]),
         ((5, 26, 31), [("the Memorial Tournament", "Muirfield Village", "PGA")]),
         # June
         ((6, 1, 8), [("the Memorial Tournament", "Muirfield Village", "PGA")]),
-        ((6, 9, 15), [("U.S. Open", "Oakmont CC", "Major")]),
-        ((6, 16, 22), [("Travelers Championship", "TPC River Highlands", "PGA")]),
-        ((6, 23, 29), [("Rocket Mortgage Classic", "Detroit GC", "PGA")]),
-        ((6, 30, 30), [("John Deere Classic", "TPC Deere Run", "PGA")]),
+        ((6, 9, 15), [("RBC Canadian Open", "TPC Toronto", "PGA")]),
+        ((6, 16, 22), [("U.S. Open", "Shinnecock Hills", "Major")]),
+        ((6, 23, 29), [("Travelers Championship", "TPC River Highlands", "PGA")]),
+        ((6, 30, 30), [("Rocket Mortgage Classic", "Detroit GC", "PGA")]),
         # July
-        ((7, 1, 6), [("John Deere Classic", "TPC Deere Run", "PGA")]),
-        ((7, 7, 13), [("Genesis Scottish Open", "Renaissance Club", "PGA")]),
-        ((7, 14, 20), [("The Open Championship", "St Andrews", "Major")]),
-        ((7, 21, 27), [("3M Open", "TPC Twin Cities", "PGA")]),
-        ((7, 28, 31), [("Wyndham Championship", "Sedgefield CC", "PGA")]),
+        ((7, 1, 6), [("Rocket Mortgage Classic", "Detroit GC", "PGA")]),
+        ((7, 7, 13), [("John Deere Classic", "TPC Deere Run", "PGA")]),
+        ((7, 14, 20), [("Genesis Scottish Open", "Renaissance Club", "PGA")]),
+        ((7, 21, 27), [("The Open Championship", "Royal Birkdale", "Major")]),
+        ((7, 28, 31), [("3M Open", "TPC Twin Cities", "PGA")]),
         # August
-        ((8, 1, 3), [("Wyndham Championship", "Sedgefield CC", "PGA")]),
-        ((8, 4, 10), [("FedEx St. Jude Championship", "TPC Southwind", "PGA")]),
-        ((8, 11, 17), [("BMW Championship", "Castle Pines", "PGA")]),
-        ((8, 18, 24), [("TOUR Championship", "East Lake", "PGA")]),
+        ((8, 1, 3), [("3M Open", "TPC Twin Cities", "PGA")]),
+        ((8, 4, 10), [("Wyndham Championship", "Sedgefield CC", "PGA")]),
+        ((8, 11, 17), [("FedEx St. Jude Championship", "TPC Southwind", "PGA")]),
+        ((8, 18, 24), [("BMW Championship", "Bellerive CC", "PGA")]),
+        ((8, 25, 31), [("TOUR Championship", "East Lake", "PGA")]),
         # September
         ((9, 22, 28), [("Presidents Cup", "Royal Montreal", "PGA")]),
         # October
@@ -2927,7 +2981,7 @@ def _get_next_week_tournaments() -> list:
         ((3, 1, 5), [("Cognizant Classic", "PGA National", "PGA")]),
         ((3, 6, 12), [("Arnold Palmer Invitational", "Bay Hill", "PGA")]),
         ((3, 13, 19), [("THE PLAYERS Championship", "TPC Sawgrass", "PGA")]),
-        ((3, 20, 26), [("Valspar Championship", "Innisbrook Copperhead", "PGA")]),
+        ((3, 20, 26), [("Texas Children's Houston Open", "Memorial Park GC", "PGA")]),
         ((3, 27, 31), [("Valero Texas Open", "TPC San Antonio", "PGA")]),
         ((4, 1, 6), [("Valero Texas Open", "TPC San Antonio", "PGA")]),
         ((4, 7, 13), [("The Masters", "Augusta National", "Major")]),
@@ -2936,23 +2990,24 @@ def _get_next_week_tournaments() -> list:
         ((4, 28, 30), [("THE CJ CUP Byron Nelson", "TPC Craig Ranch", "PGA")]),
         ((5, 1, 4), [("THE CJ CUP Byron Nelson", "TPC Craig Ranch", "PGA")]),
         ((5, 5, 11), [("Wells Fargo Championship", "Quail Hollow", "PGA")]),
-        ((5, 12, 18), [("PGA Championship", "Quail Hollow", "Major")]),
+        ((5, 12, 18), [("PGA Championship", "Aronimink GC", "Major")]),
         ((5, 19, 25), [("Charles Schwab Challenge", "Colonial CC", "PGA")]),
         ((5, 26, 31), [("the Memorial Tournament", "Muirfield Village", "PGA")]),
         ((6, 1, 8), [("the Memorial Tournament", "Muirfield Village", "PGA")]),
-        ((6, 9, 15), [("U.S. Open", "Oakmont CC", "Major")]),
-        ((6, 16, 22), [("Travelers Championship", "TPC River Highlands", "PGA")]),
-        ((6, 23, 29), [("Rocket Mortgage Classic", "Detroit GC", "PGA")]),
-        ((6, 30, 30), [("John Deere Classic", "TPC Deere Run", "PGA")]),
-        ((7, 1, 6), [("John Deere Classic", "TPC Deere Run", "PGA")]),
-        ((7, 7, 13), [("Genesis Scottish Open", "Renaissance Club", "PGA")]),
-        ((7, 14, 20), [("The Open Championship", "St Andrews", "Major")]),
-        ((7, 21, 27), [("3M Open", "TPC Twin Cities", "PGA")]),
-        ((7, 28, 31), [("Wyndham Championship", "Sedgefield CC", "PGA")]),
-        ((8, 1, 3), [("Wyndham Championship", "Sedgefield CC", "PGA")]),
-        ((8, 4, 10), [("FedEx St. Jude Championship", "TPC Southwind", "PGA")]),
-        ((8, 11, 17), [("BMW Championship", "Castle Pines", "PGA")]),
-        ((8, 18, 24), [("TOUR Championship", "East Lake", "PGA")]),
+        ((6, 9, 15), [("RBC Canadian Open", "TPC Toronto", "PGA")]),
+        ((6, 16, 22), [("U.S. Open", "Shinnecock Hills", "Major")]),
+        ((6, 23, 29), [("Travelers Championship", "TPC River Highlands", "PGA")]),
+        ((6, 30, 30), [("Rocket Mortgage Classic", "Detroit GC", "PGA")]),
+        ((7, 1, 6), [("Rocket Mortgage Classic", "Detroit GC", "PGA")]),
+        ((7, 7, 13), [("John Deere Classic", "TPC Deere Run", "PGA")]),
+        ((7, 14, 20), [("Genesis Scottish Open", "Renaissance Club", "PGA")]),
+        ((7, 21, 27), [("The Open Championship", "Royal Birkdale", "Major")]),
+        ((7, 28, 31), [("3M Open", "TPC Twin Cities", "PGA")]),
+        ((8, 1, 3), [("3M Open", "TPC Twin Cities", "PGA")]),
+        ((8, 4, 10), [("Wyndham Championship", "Sedgefield CC", "PGA")]),
+        ((8, 11, 17), [("FedEx St. Jude Championship", "TPC Southwind", "PGA")]),
+        ((8, 18, 24), [("BMW Championship", "Bellerive CC", "PGA")]),
+        ((8, 25, 31), [("TOUR Championship", "East Lake", "PGA")]),
         ((9, 22, 28), [("Presidents Cup", "Royal Montreal", "PGA")]),
         ((10, 6, 12), [("Sanderson Farms Championship", "CC of Jackson", "PGA")]),
         ((10, 13, 19), [("Shriners Children's Open", "TPC Summerlin", "PGA")]),
@@ -3022,6 +3077,31 @@ TOURNAMENT_TO_COURSE = {
     "BMW Championship": "Castle Pines",
     "TOUR Championship": "East Lake",
     "Cognizant Classic": "PGA National",
+    "Texas Children's Houston Open": "Memorial Park GC",
+    "Houston Open": "Memorial Park GC",
+    "The Sentry": "Kapalua Plantation",
+    "The American Express": "PGA West Stadium",
+    "Mexico Open": "Vidanta Vallarta",
+    "Mexico Open at Vidanta": "Vidanta Vallarta",
+    "Zurich Classic": "TPC Louisiana",
+    "Zurich Classic of New Orleans": "TPC Louisiana",
+    "THE CJ CUP Byron Nelson": "TPC Craig Ranch",
+    "CJ CUP Byron Nelson": "TPC Craig Ranch",
+    "3M Open": "TPC Twin Cities",
+    "John Deere Classic": "TPC Deere Run",
+    "Genesis Scottish Open": "Renaissance Club",
+    "Rocket Mortgage Classic": "Detroit GC",
+    "Sanderson Farms Championship": "CC of Jackson",
+    "Shriners Children's Open": "TPC Summerlin",
+    "ZOZO Championship": "Accordia Golf",
+    "World Wide Technology Championship": "El Cardonal",
+    "Bermuda Championship": "Port Royal",
+    "Butterfield Bermuda Championship": "Port Royal",
+    "RSM Classic": "Sea Island",
+    "The RSM Classic": "Sea Island",
+    "Hero World Challenge": "Albany GC",
+    "RBC Canadian Open": "TPC Toronto",
+    "Presidents Cup": "Royal Montreal",
 }
 
 
@@ -3055,6 +3135,13 @@ def _resolve_espn_to_course(event_name: str, venue_name: str = "") -> str | None
             "riviera": "Riviera CC",
             "pebble beach": "Pebble Beach",
             "torrey pines": "Torrey Pines South",
+            "memorial park": "Memorial Park GC",
+            "aronimink": "Aronimink GC",
+            "shinnecock": "Shinnecock Hills",
+            "royal birkdale": "Royal Birkdale",
+            "birkdale": "Royal Birkdale",
+            "bellerive": "Bellerive CC",
+            "osprey valley": "TPC Toronto",
         }
         for alias, ckey in alias_map.items():
             if alias in venue_lower:

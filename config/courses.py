@@ -201,6 +201,72 @@ COURSE_PROFILES = {
         "key_skills": ["complete_ball_striker", "clutch_putting"],
         "notes": "Tour Championship — elite field only. Complete game wins. Historical performance at East Lake in particular matters for form model."
     },
+    "Memorial Park GC": {
+        "sg_weights": {"sg_ott": 0.22, "sg_app": 0.32, "sg_atg": 0.18, "sg_putt": 0.28},
+        "distance_bonus": 0.45,
+        "accuracy_penalty": 0.55,
+        "bermuda_greens": True,
+        "elevation_ft": 50,
+        "typical_conditions": "parkland_tropical",
+        "wind_sensitivity": 0.35,
+        "key_skills": ["driving_distance", "approach_accuracy", "bermuda_putting"],
+        "notes": "Texas Children's Houston Open — Tom Doak municipal redesign. Long par-4s, bermuda greens, tight corridors reward driving distance + accuracy."
+    },
+    "Aronimink GC": {
+        "sg_weights": {"sg_ott": 0.20, "sg_app": 0.32, "sg_atg": 0.18, "sg_putt": 0.30},
+        "distance_bonus": 0.40,
+        "accuracy_penalty": 0.60,
+        "bermuda_greens": False,
+        "elevation_ft": 400,
+        "typical_conditions": "parkland",
+        "wind_sensitivity": 0.30,
+        "key_skills": ["iron_play", "scrambling", "bentgrass_putting"],
+        "notes": "2026 PGA Championship — classic Donald Ross design, tight tree-lined, bentgrass, precise iron play and scrambling rewarded."
+    },
+    "Shinnecock Hills": {
+        "sg_weights": {"sg_ott": 0.17, "sg_app": 0.30, "sg_atg": 0.22, "sg_putt": 0.31},
+        "distance_bonus": 0.25,
+        "accuracy_penalty": 0.60,
+        "bermuda_greens": False,
+        "elevation_ft": 50,
+        "typical_conditions": "links_coastal",
+        "wind_sensitivity": 0.75,
+        "key_skills": ["wind_play", "scrambling", "approach_accuracy"],
+        "notes": "2026 U.S. Open — links-influenced, coastal wind, fescue, firm and fast, complete ball-striking test."
+    },
+    "Royal Birkdale": {
+        "sg_weights": {"sg_ott": 0.18, "sg_app": 0.28, "sg_atg": 0.23, "sg_putt": 0.31},
+        "distance_bonus": 0.30,
+        "accuracy_penalty": 0.55,
+        "bermuda_greens": False,
+        "elevation_ft": 15,
+        "typical_conditions": "links",
+        "wind_sensitivity": 0.85,
+        "key_skills": ["wind_play", "scrambling", "links_experience"],
+        "notes": "2026 Open Championship — English links, dune-lined fairways, pot bunkers, heavy wind, scrambling critical."
+    },
+    "TPC Toronto": {
+        "sg_weights": {"sg_ott": 0.18, "sg_app": 0.30, "sg_atg": 0.18, "sg_putt": 0.34},
+        "distance_bonus": 0.35,
+        "accuracy_penalty": 0.50,
+        "bermuda_greens": False,
+        "elevation_ft": 300,
+        "typical_conditions": "parkland",
+        "wind_sensitivity": 0.35,
+        "key_skills": ["ball_striking", "bentgrass_putting"],
+        "notes": "RBC Canadian Open — Osprey Valley, heathland-style layout, bentgrass, balanced test."
+    },
+    "Bellerive CC": {
+        "sg_weights": {"sg_ott": 0.20, "sg_app": 0.30, "sg_atg": 0.17, "sg_putt": 0.33},
+        "distance_bonus": 0.45,
+        "accuracy_penalty": 0.55,
+        "bermuda_greens": False,
+        "elevation_ft": 500,
+        "typical_conditions": "parkland",
+        "wind_sensitivity": 0.30,
+        "key_skills": ["driving_distance", "iron_play", "bentgrass_putting"],
+        "notes": "2026 BMW Championship — long layout, bentgrass, Midwest humidity, rewards power and precision."
+    },
 }
 
 # ─────────────────────────────────────────────────────────────────
@@ -215,6 +281,13 @@ COURSE_ALIASES = {
     "Torrey Pines (South Course)": "Torrey Pines South",
     "Innisbrook Resort (Copperhead Course)": "Innisbrook (Copperhead)",
     "Harbour Town Golf Links": "Harbour Town",
+    "Memorial Park Golf Course": "Memorial Park GC",
+    "Memorial Park": "Memorial Park GC",
+    "Aronimink Golf Club": "Aronimink GC",
+    "Shinnecock Hills Golf Club": "Shinnecock Hills",
+    "Royal Birkdale Golf Club": "Royal Birkdale",
+    "TPC Toronto at Osprey Valley": "TPC Toronto",
+    "Bellerive Country Club": "Bellerive CC",
 }
 
 # ─────────────────────────────────────────────────────────────────
