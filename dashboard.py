@@ -106,21 +106,27 @@ html, body, [class*="css"] {
 }
 
 /* ── Hide Streamlit chrome ──────────────────────────────── */
-#MainMenu, footer, header { visibility: hidden; }
+#MainMenu, footer { visibility: hidden; }
 [data-testid="stToolbar"] { display: none; }
 [data-testid="stDecoration"] { display: none; }
-/* ── Keep sidebar expand button visible after collapse ──── */
-[data-testid="stSidebar"][aria-expanded="false"] ~ [data-testid="collapsedControl"],
-[data-testid="collapsedControl"] {
-    visibility: visible !important;
-    display: block !important;
-    z-index: 999 !important;
-}
 
-/* ── Sidebar ────────────────────────────────────────────── */
+/* ── Sidebar — permanently open, no collapse ───────────── */
 [data-testid="stSidebar"] {
     background: linear-gradient(180deg, #0c1220 0%, #0a0f1a 100%) !important;
     border-right: 1px solid rgba(255,255,255,0.06);
+    min-width: 300px !important;
+    max-width: 300px !important;
+    width: 300px !important;
+    transform: none !important;
+    position: relative !important;
+}
+[data-testid="stSidebar"] > div:first-child {
+    width: 300px !important;
+}
+/* Hide the collapse (X) button */
+[data-testid="stSidebar"] button[kind="header"],
+[data-testid="stSidebarCollapseButton"] {
+    display: none !important;
 }
 [data-testid="stSidebar"] .stMarkdown p,
 [data-testid="stSidebar"] .stMarkdown li,
