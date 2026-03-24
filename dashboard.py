@@ -109,6 +109,13 @@ html, body, [class*="css"] {
 #MainMenu, footer, header { visibility: hidden; }
 [data-testid="stToolbar"] { display: none; }
 [data-testid="stDecoration"] { display: none; }
+/* ── Keep sidebar expand button visible after collapse ──── */
+[data-testid="stSidebar"][aria-expanded="false"] ~ [data-testid="collapsedControl"],
+[data-testid="collapsedControl"] {
+    visibility: visible !important;
+    display: block !important;
+    z-index: 999 !important;
+}
 
 /* ── Sidebar ────────────────────────────────────────────── */
 [data-testid="stSidebar"] {
