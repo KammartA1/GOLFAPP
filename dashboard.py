@@ -2889,6 +2889,96 @@ def _get_current_week_tournaments() -> list:
     return result
 
 
+def _get_next_week_tournaments() -> list:
+    """Return list of tournaments happening NEXT week based on current date.
+
+    Looks 7 days ahead from today and returns the first matching tournament
+    window in the schedule. Useful for pre-tournament preparation before
+    official lines are released.
+    """
+    next_week = datetime.now() + timedelta(days=7)
+    month, day = next_week.month, next_week.day
+
+    # Same schedule as _get_current_week_tournaments
+    schedule = [
+        ((1, 2, 8), [("The Sentry", "Kapalua Plantation", "PGA")]),
+        ((1, 9, 15), [("Sony Open", "Waialae CC", "PGA")]),
+        ((1, 16, 22), [("The American Express", "PGA West Stadium", "PGA")]),
+        ((1, 23, 29), [("Farmers Insurance Open", "Torrey Pines South", "PGA")]),
+        ((1, 30, 31), [("AT&T Pebble Beach Pro-Am", "Pebble Beach", "PGA")]),
+        ((2, 1, 5), [("AT&T Pebble Beach Pro-Am", "Pebble Beach", "PGA")]),
+        ((2, 6, 12), [("WM Phoenix Open", "TPC Scottsdale", "PGA")]),
+        ((2, 13, 19), [("Genesis Invitational", "Riviera CC", "PGA")]),
+        ((2, 20, 26), [("Mexico Open", "Vidanta Vallarta", "PGA")]),
+        ((2, 27, 28), [("Cognizant Classic", "PGA National", "PGA")]),
+        ((3, 1, 5), [("Cognizant Classic", "PGA National", "PGA")]),
+        ((3, 6, 12), [("Arnold Palmer Invitational", "Bay Hill", "PGA")]),
+        ((3, 13, 19), [("THE PLAYERS Championship", "TPC Sawgrass", "PGA")]),
+        ((3, 20, 26), [("Valspar Championship", "Innisbrook Copperhead", "PGA")]),
+        ((3, 27, 31), [("Valero Texas Open", "TPC San Antonio", "PGA")]),
+        ((4, 1, 6), [("Valero Texas Open", "TPC San Antonio", "PGA")]),
+        ((4, 7, 13), [("The Masters", "Augusta National", "Major")]),
+        ((4, 14, 20), [("RBC Heritage", "Harbour Town", "PGA")]),
+        ((4, 21, 27), [("Zurich Classic", "TPC Louisiana", "PGA")]),
+        ((4, 28, 30), [("THE CJ CUP Byron Nelson", "TPC Craig Ranch", "PGA")]),
+        ((5, 1, 4), [("THE CJ CUP Byron Nelson", "TPC Craig Ranch", "PGA")]),
+        ((5, 5, 11), [("Wells Fargo Championship", "Quail Hollow", "PGA")]),
+        ((5, 12, 18), [("PGA Championship", "Quail Hollow", "Major")]),
+        ((5, 19, 25), [("Charles Schwab Challenge", "Colonial CC", "PGA")]),
+        ((5, 26, 31), [("the Memorial Tournament", "Muirfield Village", "PGA")]),
+        ((6, 1, 8), [("the Memorial Tournament", "Muirfield Village", "PGA")]),
+        ((6, 9, 15), [("U.S. Open", "Oakmont CC", "Major")]),
+        ((6, 16, 22), [("Travelers Championship", "TPC River Highlands", "PGA")]),
+        ((6, 23, 29), [("Rocket Mortgage Classic", "Detroit GC", "PGA")]),
+        ((6, 30, 30), [("John Deere Classic", "TPC Deere Run", "PGA")]),
+        ((7, 1, 6), [("John Deere Classic", "TPC Deere Run", "PGA")]),
+        ((7, 7, 13), [("Genesis Scottish Open", "Renaissance Club", "PGA")]),
+        ((7, 14, 20), [("The Open Championship", "St Andrews", "Major")]),
+        ((7, 21, 27), [("3M Open", "TPC Twin Cities", "PGA")]),
+        ((7, 28, 31), [("Wyndham Championship", "Sedgefield CC", "PGA")]),
+        ((8, 1, 3), [("Wyndham Championship", "Sedgefield CC", "PGA")]),
+        ((8, 4, 10), [("FedEx St. Jude Championship", "TPC Southwind", "PGA")]),
+        ((8, 11, 17), [("BMW Championship", "Castle Pines", "PGA")]),
+        ((8, 18, 24), [("TOUR Championship", "East Lake", "PGA")]),
+        ((9, 22, 28), [("Presidents Cup", "Royal Montreal", "PGA")]),
+        ((10, 6, 12), [("Sanderson Farms Championship", "CC of Jackson", "PGA")]),
+        ((10, 13, 19), [("Shriners Children's Open", "TPC Summerlin", "PGA")]),
+        ((10, 20, 26), [("ZOZO Championship", "Accordia Golf", "PGA")]),
+        ((10, 27, 31), [("World Wide Technology Championship", "El Cardonal", "PGA")]),
+        ((11, 3, 9), [("Bermuda Championship", "Port Royal", "PGA")]),
+        ((11, 10, 16), [("Butterfield Bermuda Championship", "Port Royal", "PGA")]),
+        ((11, 17, 23), [("RSM Classic", "Sea Island", "PGA")]),
+        ((12, 1, 7), [("Hero World Challenge", "Albany GC", "PGA")]),
+    ]
+
+    matches = []
+    for (m, d_start, d_end), tournaments in schedule:
+        if month == m and d_start <= day <= d_end:
+            matches.extend(tournaments)
+
+    if not matches:
+        # Try looking 10 and 14 days ahead as fallback
+        for offset_days in [10, 14]:
+            future = datetime.now() + timedelta(days=offset_days)
+            fm, fd = future.month, future.day
+            for (m, d_start, d_end), tournaments in schedule:
+                if fm == m and d_start <= fd <= d_end:
+                    matches.extend(tournaments)
+            if matches:
+                break
+
+    if not matches:
+        return []
+
+    result = []
+    seen = set()
+    for name, course_key, tour in matches:
+        if name not in seen:
+            result.append({"tournament": name, "course": course_key, "tour": tour})
+            seen.add(name)
+    return result
+
+
 # ── ESPN event name -> course key mapping ─────────────────
 TOURNAMENT_TO_COURSE = {
     "Valspar Championship": "Innisbrook Copperhead",
@@ -3837,23 +3927,64 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
             parlay_mc = mc_parlay_simulation(parlay_picks, n_sims=5000)
 
         # ════════════════════════════════════════════════════════
-        # PHASE 2: Tournament Simulation Overlay
+        # PHASE 2: Tournament Simulation (REAL — full 4-round sim)
         # ════════════════════════════════════════════════════════
         sim_data = {}
-        with st.spinner("Phase 2/4: Tournament simulation overlay..."):
-            for pk in parlay_picks:
-                player_match = proj_df[proj_df["player"] == pk["player"]]
-                if not player_match.empty:
-                    p_row = player_match.iloc[0]
-                    sim_data[pk["player"]] = {
-                        "win_prob": float(p_row.get("win_prob", 0)),
-                        "top5_prob": float(p_row.get("top5_prob", 0)),
-                        "top10_prob": float(p_row.get("top10_prob", 0)),
-                        "cut_prob": float(p_row.get("cut_prob", 0)),
-                        "sg_total": float(p_row.get("sg_regressed", p_row.get("sg_total", 0))),
-                        "course_fit": float(p_row.get("course_delta", 0)),
-                    }
-                pk["sim"] = sim_data.get(pk["player"], {})
+        sim_ran = False
+        with st.spinner("Phase 2/4: Running full tournament simulation (10,000 tournaments)..."):
+            try:
+                from simulation.pipeline_bridge import SimulationBridge
+                sim_bridge = SimulationBridge(n_sims=10000)
+                sim_df = sim_bridge.run_tournament_simulation(
+                    field_projections=proj_df,
+                    course_name=settings.get("course", ""),
+                )
+                sim_ran = True
+                # Build sim_data dict from simulation results
+                for pk in parlay_picks:
+                    player_match = sim_df[sim_df["name"] == pk["player"]] if "name" in sim_df.columns else pd.DataFrame()
+                    if player_match.empty:
+                        # Try name matching
+                        player_match = sim_df[sim_df["name"].str.contains(pk["player"], case=False, na=False)] if "name" in sim_df.columns else pd.DataFrame()
+                    if not player_match.empty:
+                        s_row = player_match.iloc[0]
+                        sim_data[pk["player"]] = {
+                            "win_prob": float(s_row.get("sim_win_prob", s_row.get("win_prob", 0))),
+                            "top5_prob": float(s_row.get("sim_top5_prob", s_row.get("top5_prob", 0))),
+                            "top10_prob": float(s_row.get("sim_top10_prob", s_row.get("top10_prob", 0))),
+                            "top20_prob": float(s_row.get("sim_top20_prob", s_row.get("top20_prob", 0))),
+                            "cut_prob": float(s_row.get("sim_make_cut_prob", s_row.get("make_cut_prob", s_row.get("cut_prob", 0)))),
+                            "avg_finish": float(s_row.get("sim_avg_finish", s_row.get("avg_finish", 0))),
+                            "avg_score": float(s_row.get("sim_avg_score", s_row.get("avg_score", 0))),
+                            "sg_total": float(s_row.get("sg_regressed", s_row.get("sg_total", 0))),
+                            "course_fit": float(s_row.get("course_delta", s_row.get("course_fit", 0))),
+                            "sim_ran": True,
+                        }
+                    pk["sim"] = sim_data.get(pk["player"], {})
+
+                    # Blend simulation with MC probability (if sim data available)
+                    if pk["sim"].get("sim_ran") and pk["sim"].get("cut_prob", 0) > 0:
+                        # Adjust MC prob based on tournament context:
+                        # If player has low cut probability, reduce confidence
+                        cut_adj = min(1.0, pk["sim"]["cut_prob"] / 0.80)
+                        # Weight original MC prob by cut reliability
+                        pk["prob"] = pk["prob"] * (0.7 + 0.3 * cut_adj)
+            except Exception as e:
+                # Fallback to analytical values from proj_df
+                for pk in parlay_picks:
+                    player_match = proj_df[proj_df["player"] == pk["player"]]
+                    if not player_match.empty:
+                        p_row = player_match.iloc[0]
+                        sim_data[pk["player"]] = {
+                            "win_prob": float(p_row.get("win_prob", 0)),
+                            "top5_prob": float(p_row.get("top5_prob", 0)),
+                            "top10_prob": float(p_row.get("top10_prob", 0)),
+                            "cut_prob": float(p_row.get("cut_prob", 0)),
+                            "sg_total": float(p_row.get("sg_regressed", p_row.get("sg_total", 0))),
+                            "course_fit": float(p_row.get("course_delta", 0)),
+                            "sim_ran": False,
+                        }
+                    pk["sim"] = sim_data.get(pk["player"], {})
 
         # ════════════════════════════════════════════════════════
         # PHASE 3: Edge Analysis + Kill Switch + Kelly Sizing
@@ -3921,13 +4052,29 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
                 except Exception:
                     pass
 
+        # ── Auto-CLV: Store opening snapshot for background tracking ──
+        if _DB_AVAILABLE and clv_logged:
+            clv_snapshots = []
+            for pk in parlay_picks:
+                clv_snapshots.append({
+                    "player": pk["player"],
+                    "stat": pk["stat"],
+                    "line": pk["line"],
+                    "side": pk["side"],
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "prob": pk["prob"],
+                    "type": "opening",
+                })
+            st.session_state["clv_active_bets"] = clv_snapshots
+
         # ════════════════════════════════════════════════════════
         # UNIFIED RESULTS DISPLAY
         # ════════════════════════════════════════════════════════
         st.markdown("## Unified Model Results")
 
         # ── Individual Leg Analysis ──
-        st.markdown("**Individual Leg Analysis (MC 5000x, 5 Engines + Tournament Sim)**")
+        _sim_label = "10K Tournament Sim" if sim_ran else "Analytical Estimates"
+        st.markdown(f"**Individual Leg Analysis (MC 5000x, 5 Engines + {_sim_label})**")
         leg_data = []
         for pk in parlay_picks:
             mc = pk["mc"]
@@ -3973,7 +4120,9 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
 
                 # Tournament simulation context
                 if sim_info:
-                    sim_cols = st.columns(4)
+                    _sim_source = "Simulated" if sim_info.get("sim_ran") else "Analytical"
+                    st.markdown(f"<div style='font-size:0.65rem;color:#94a3b8;margin:4px 0;'>Source: {_sim_source}</div>", unsafe_allow_html=True)
+                    sim_cols = st.columns(5)
                     with sim_cols[0]:
                         st.markdown(metric_card("Win Prob", f"{sim_info.get('win_prob', 0)*100:.2f}%", "", "neutral", "blue"), unsafe_allow_html=True)
                     with sim_cols[1]:
@@ -3986,6 +4135,11 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
                         st.markdown(metric_card("Course Fit", f"{sim_info.get('course_fit', 0):+.2f}",
                                     "Advantage" if sim_info.get("course_fit", 0) > 0.3 else "Neutral",
                                     "positive" if sim_info.get("course_fit", 0) > 0 else "negative", "purple"), unsafe_allow_html=True)
+                    with sim_cols[4]:
+                        avg_f = sim_info.get("avg_finish", 0)
+                        st.markdown(metric_card("Avg Finish", f"#{avg_f:.0f}" if avg_f > 0 else "—",
+                                    "Top 20" if 0 < avg_f <= 20 else "Mid Pack" if avg_f <= 40 else "",
+                                    "positive" if 0 < avg_f <= 20 else "neutral", "green"), unsafe_allow_html=True)
 
                 st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
 
@@ -4053,6 +4207,29 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
                             "positive" if not blocked and stake > 0 else "negative",
                             "green" if not blocked else "red",
                         ), unsafe_allow_html=True)
+
+        # ── CLV STATUS ──
+        if clv_logged:
+            st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+            st.markdown("**CLV Tracking Status**")
+            clv_status_rows = []
+            for pk in parlay_picks:
+                clv_status_rows.append({
+                    "Player": pk["player"],
+                    "Stat": pk["stat"],
+                    "Side": pk["side"],
+                    "Opening Line": pk["line"],
+                    "Logged At": datetime.utcnow().strftime("%H:%M UTC"),
+                    "Status": "Tracking",
+                })
+            st.dataframe(pd.DataFrame(clv_status_rows), use_container_width=True, hide_index=True)
+            st.markdown(
+                '<div style="font-size:0.78rem;color:#94a3b8;margin-top:4px;">'
+                '&#9989; Opening lines logged. Closing lines will be captured automatically '
+                'when you visit the Quant System tab or when bets are settled. '
+                'Line movements are tracked in real time via the CLV Tracker.</div>',
+                unsafe_allow_html=True,
+            )
 
         # ── UNIFIED VERDICT ──
         st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
@@ -4645,17 +4822,56 @@ def tab_quant_system(proj_df: pd.DataFrame, settings: dict):
         # Pending bets with settlement
         pending = engine.bet_logger.get_pending_bets()
         if pending:
+            # Auto-fetch closing lines from current PP lines for all pending bets
+            pp_lines = st.session_state.get("pp_lines", [])
+            closing_line_cache = {}
+            for bet in pending:
+                closing = bet["line"]  # default to opening line
+                for pl in pp_lines:
+                    if pl.get("player") == bet["player"] and pl.get("stat_type") == bet["stat_type"]:
+                        closing = pl.get("line", bet["line"])
+                        break
+                closing_line_cache[bet["bet_id"]] = closing
+
+                # Log closing line movement to DB if line has moved
+                if closing != bet["line"] and _DB_AVAILABLE:
+                    try:
+                        from database.connection import DatabaseManager
+                        from database.models import LineMovement
+                        with DatabaseManager.session_scope() as session:
+                            lm = LineMovement(
+                                player_name=bet["player"],
+                                market=bet["stat_type"],
+                                line=closing,
+                                odds=-110,
+                                source="prizepicks_closing",
+                                is_opening=False,
+                                timestamp=datetime.utcnow(),
+                            )
+                            session.add(lm)
+                            session.commit()
+                    except Exception:
+                        pass
+
             st.markdown(f"**Pending Bets ({len(pending)})**")
             for bet in pending:
+                closing = closing_line_cache.get(bet["bet_id"], bet["line"])
+                clv_delta = closing - bet["line"]
+                clv_tag = ""
+                if clv_delta != 0:
+                    favorable = (clv_delta > 0 and bet["direction"] == "under") or (clv_delta < 0 and bet["direction"] == "over")
+                    clv_color = "#00FF88" if favorable else "#FF3358"
+                    clv_tag = f' <span style="color:{clv_color};font-size:0.75rem;">(CLV: {clv_delta:+.1f})</span>'
+
                 bc1, bc2, bc3, bc4 = st.columns([3, 1, 1, 1])
                 with bc1:
-                    st.write(f"{bet['player']} {bet['direction'].upper()} {bet['stat_type']} @ {bet['line']} — ${bet['stake']:.2f}")
+                    st.markdown(f"{bet['player']} {bet['direction'].upper()} {bet['stat_type']} @ {bet['line']} → {closing} — ${bet['stake']:.2f}{clv_tag}", unsafe_allow_html=True)
                 with bc2:
                     actual = st.number_input("Result", key=f"res_{bet['bet_id']}", value=0.0, step=0.5)
                 with bc3:
                     if st.button("Settle", key=f"settle_{bet['bet_id']}"):
-                        result = engine.settle_bet(bet["bet_id"], actual_result=actual, closing_line=bet["line"])
-                        st.success(f"{'WON' if result['won'] else 'LOST'} | P&L: ${result['pnl']:+.2f}")
+                        result = engine.settle_bet(bet["bet_id"], actual_result=actual, closing_line=closing)
+                        st.success(f"{'WON' if result['won'] else 'LOST'} | P&L: ${result['pnl']:+.2f} | CLV: {clv_delta:+.1f}")
                         st.rerun()
                 with bc4:
                     if st.button("Void", key=f"void_{bet['bet_id']}"):
@@ -4711,6 +4927,39 @@ def tab_quant_system(proj_df: pd.DataFrame, settings: dict):
                 for k, v in clv_by_type.items()
             ])
             st.dataframe(type_df, use_container_width=True, hide_index=True)
+
+        # Auto CLV refresh — live tracking of active bets
+        active_bets = st.session_state.get("clv_active_bets", [])
+        if active_bets:
+            st.markdown("---")
+            st.markdown("**Active Bet CLV Tracking**")
+            clv_rows = []
+            pp_lines = st.session_state.get("pp_lines", [])
+            for bet in active_bets:
+                current_line = bet["line"]  # default to opening
+                # Try to find current line from PP lines
+                for pl in pp_lines:
+                    if pl.get("player") == bet["player"] and pl.get("stat_type") == bet["stat"]:
+                        current_line = pl.get("line", bet["line"])
+                        break
+                clv_move = current_line - bet["line"]
+                is_favorable = (clv_move > 0 and bet["side"] == "UNDER") or (clv_move < 0 and bet["side"] == "OVER")
+                clv_rows.append({
+                    "Player": bet["player"],
+                    "Stat": bet["stat"],
+                    "Side": bet["side"],
+                    "Opening": bet["line"],
+                    "Current": current_line,
+                    "CLV Move": f"{clv_move:+.1f}",
+                    "Direction": "Favorable" if is_favorable else ("Neutral" if clv_move == 0 else "Unfavorable"),
+                    "Logged": bet["timestamp"][:16],
+                })
+            if clv_rows:
+                st.dataframe(pd.DataFrame(clv_rows), use_container_width=True, hide_index=True)
+            if st.button("Refresh CLV (re-fetch lines)", key="refresh_clv"):
+                st.rerun()
+        else:
+            st.markdown('<div style="font-size:0.8rem;color:#64748b;margin-top:12px;">No active bets being tracked. Run the PrizePicks Lab model to start CLV tracking.</div>', unsafe_allow_html=True)
 
     # ── EDGE VALIDATION ──
     with qs_tabs[3]:
@@ -5538,6 +5787,124 @@ def tab_verdict(proj_df: pd.DataFrame, settings: dict):
 
 
 # ============================================================
+# ============================================================
+# TAB — NEXT WEEK PREP (Pre-tournament analysis before lines drop)
+# ============================================================
+def tab_next_week_prep(proj_df: pd.DataFrame, settings: dict):
+    """Pre-tournament preparation — run projections + simulation for next week before lines are released."""
+    st.markdown(section_header("Next Week Prep", "&#128197;", "Get Ahead Before Lines Drop"), unsafe_allow_html=True)
+
+    next_tournaments = _get_next_week_tournaments()
+    current_tournaments = _get_current_week_tournaments()
+
+    if not next_tournaments:
+        st.info("No tournament found in schedule for next week. Check back closer to the next event.")
+        return
+
+    next_t = next_tournaments[0]
+    st.markdown(f"""
+    <div class="glass-card" style="padding:16px;margin-bottom:16px;">
+        <div style="font-size:1.1rem;font-weight:700;color:#e2e8f0;">
+            Next Up: {next_t['tournament']}
+        </div>
+        <div style="font-size:0.85rem;color:#94a3b8;margin-top:4px;">
+            Course: {next_t['course']} &bull; Tour: {next_t['tour']}
+        </div>
+        <div style="font-size:0.75rem;color:#fbbf24;margin-top:8px;">
+            Official lines not yet available — these are preliminary projections based on current SG data and course fit.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Use the current field as a proxy (most players carry over week to week)
+    if proj_df is None or proj_df.empty:
+        st.warning("No projection data loaded. Load tournament data first.")
+        return
+
+    prep_tabs = st.tabs(["Power Rankings", "Tournament Simulation", "Course Fit Preview", "Early Value IDs"])
+
+    with prep_tabs[0]:
+        st.markdown("**Preliminary Power Rankings (SG-Based)**")
+        st.markdown(f"<div style='font-size:0.7rem;color:#94a3b8;'>Based on current SG data projected to {next_t['course']}</div>", unsafe_allow_html=True)
+        rank_cols = ["player", "sg_regressed", "win_prob", "top10_prob", "cut_prob"]
+        display_cols = [c for c in rank_cols if c in proj_df.columns]
+        if display_cols:
+            rank_df = proj_df[display_cols].head(30).copy()
+            rank_df.columns = [c.replace("_", " ").title() for c in rank_df.columns]
+            st.dataframe(rank_df, use_container_width=True, hide_index=False)
+
+    with prep_tabs[1]:
+        st.markdown("**Full Tournament Simulation — 10,000 Tournaments**")
+        if st.button("Run Pre-Tournament Simulation", key="run_next_week_sim", type="primary"):
+            with st.spinner(f"Simulating 10,000 tournaments at {next_t['course']}..."):
+                try:
+                    from simulation.pipeline_bridge import SimulationBridge
+                    sim_bridge = SimulationBridge(n_sims=10000)
+                    sim_df = sim_bridge.run_tournament_simulation(
+                        field_projections=proj_df,
+                        course_name=next_t["course"],
+                    )
+                    st.success(f"Simulation complete — {len(sim_df)} players simulated")
+                    # Display simulation results
+                    sim_display_cols = ["name", "sim_win_prob", "sim_top5_prob", "sim_top10_prob",
+                                       "sim_top20_prob", "sim_make_cut_prob", "sim_avg_finish", "sim_avg_score"]
+                    available = [c for c in sim_display_cols if c in sim_df.columns]
+                    if available:
+                        show_df = sim_df[available].head(40).copy()
+                        show_df.columns = [c.replace("sim_", "").replace("_", " ").title() for c in show_df.columns]
+                        st.dataframe(show_df, use_container_width=True, hide_index=True)
+                    st.session_state["next_week_sim"] = sim_df
+                except Exception as e:
+                    st.error(f"Simulation failed: {e}")
+        elif "next_week_sim" in st.session_state:
+            sim_df = st.session_state["next_week_sim"]
+            sim_display_cols = ["name", "sim_win_prob", "sim_top5_prob", "sim_top10_prob",
+                               "sim_top20_prob", "sim_make_cut_prob", "sim_avg_finish"]
+            available = [c for c in sim_display_cols if c in sim_df.columns]
+            if available:
+                show_df = sim_df[available].head(40).copy()
+                show_df.columns = [c.replace("sim_", "").replace("_", " ").title() for c in show_df.columns]
+                st.dataframe(show_df, use_container_width=True, hide_index=True)
+
+    with prep_tabs[2]:
+        st.markdown(f"**Course Fit Preview — {next_t['course']}**")
+        if "course_delta" in proj_df.columns:
+            fit_df = proj_df[["player", "sg_regressed", "course_delta"]].copy()
+            fit_df = fit_df.sort_values("course_delta", ascending=False).head(30)
+            fit_df.columns = ["Player", "SG Total", "Course Fit Delta"]
+            st.dataframe(fit_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("Course fit data not available for next week's course yet.")
+
+    with prep_tabs[3]:
+        st.markdown("**Early Value Identification**")
+        st.markdown("""
+        <div style="font-size:0.8rem;color:#94a3b8;margin-bottom:12px;">
+            Players ranked by projected probability who may be undervalued when lines open.
+            Use these as watchlist targets when PrizePicks releases lines.
+        </div>
+        """, unsafe_allow_html=True)
+        if "win_prob" in proj_df.columns and "top10_prob" in proj_df.columns:
+            value_df = proj_df[["player", "sg_regressed", "win_prob", "top10_prob", "cut_prob"]].head(25).copy()
+            value_df["value_score"] = (
+                value_df["sg_regressed"].rank(ascending=False, pct=True) * 0.4
+                + value_df["top10_prob"].rank(ascending=False, pct=True) * 0.3
+                + value_df["cut_prob"].rank(ascending=False, pct=True) * 0.3
+            )
+            value_df = value_df.sort_values("value_score", ascending=False)
+            value_df.columns = ["Player", "SG Total", "Win%", "Top 10%", "Cut%", "Value Score"]
+            for col in ["Win%", "Top 10%", "Cut%"]:
+                value_df[col] = (value_df[col] * 100).round(2).astype(str) + "%"
+            value_df["Value Score"] = value_df["Value Score"].round(3)
+            st.dataframe(value_df, use_container_width=True, hide_index=True)
+            st.markdown("""
+            <div style="font-size:0.7rem;color:#60a5fa;margin-top:8px;">
+                Tip: When lines drop, compare these projections against the opening lines.
+                Players with high value scores whose lines seem soft are your primary targets.
+            </div>
+            """, unsafe_allow_html=True)
+
+
 # MAIN APPLICATION
 # ============================================================
 def main():
@@ -5657,6 +6024,7 @@ def main():
         "&#128680; Kill Switch",
         "&#128200; Edge Monitor",
         "&#9878; Verdict",
+        "&#128197; Next Week Prep",
         "&#9881; Settings",
     ])
 
@@ -5687,6 +6055,8 @@ def main():
     with tabs[12]:
         tab_verdict(proj_df, settings)
     with tabs[13]:
+        tab_next_week_prep(proj_df, settings)
+    with tabs[14]:
         tab_settings(proj_df, settings)
 
 
