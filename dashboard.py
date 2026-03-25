@@ -4647,10 +4647,31 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
         </div>
         """, unsafe_allow_html=True)
 
-        # ── AI Lab Analysis ──
+        # ── Store model results for AI advice (persists across reruns) ──
+        st.session_state["lab_model_results"] = {
+            "parlay_picks": parlay_picks,
+            "parlay_mc": parlay_mc,
+            "kelly_results": kelly_results,
+            "sim_ran": sim_ran,
+            "verdict": verdict,
+            "confidence": confidence,
+            "ks_status": _ks_status,
+            "course": settings["course"],
+        }
+
+    # ── AI Lab Analysis (OUTSIDE the Run Full Model block so it persists) ──
+    lab_results = st.session_state.get("lab_model_results")
+    if lab_results:
         st.markdown("<div style='height:20px;'></div>", unsafe_allow_html=True)
         if st.button("Get Claude AI Parlay Advice", key="ai_lab_advice"):
             with st.spinner("Claude is analyzing your parlay with full system context..."):
+                _pp = lab_results["parlay_picks"]
+                _mc = lab_results["parlay_mc"]
+                _kr = lab_results["kelly_results"]
+                _vd = lab_results["verdict"]
+                _cf = lab_results["confidence"]
+                _ks = lab_results["ks_status"]
+
                 legs_for_ai = json.dumps([{
                     "player": pk["player"], "stat": pk["stat"], "line": pk["line"],
                     "side": pk["side"], "projection": pk["proj"],
@@ -4660,32 +4681,36 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
                     "win_prob": pk.get("sim", {}).get("win_prob", 0),
                     "cut_prob": pk.get("sim", {}).get("cut_prob", 0),
                     "course_fit": pk.get("sim", {}).get("course_fit", 0),
-                    "kelly_stake": kelly_results.get(pk["player"], {}).get("stake_dollars", 0),
-                } for pk in parlay_picks], indent=2)
+                    "kelly_stake": _kr.get(pk["player"], {}).get("stake_dollars", 0),
+                } for pk in _pp], indent=2)
 
                 mc_for_ai = json.dumps({
-                    "joint_prob": parlay_mc["joint_prob"],
-                    "naive_joint": parlay_mc["naive_joint"],
-                    "correlation_impact": parlay_mc["correlation_impact"],
-                    "power_ev": parlay_mc["power_ev"],
-                    "flex_ev": parlay_mc["flex_ev"],
-                    "per_leg_sim_prob": parlay_mc["per_leg_sim_prob"],
-                    "n_sims": parlay_mc["n_sims"],
-                    "kill_switch": _ks_status,
-                    "unified_verdict": verdict,
-                    "confidence": confidence,
+                    "joint_prob": _mc["joint_prob"],
+                    "naive_joint": _mc["naive_joint"],
+                    "correlation_impact": _mc["correlation_impact"],
+                    "power_ev": _mc["power_ev"],
+                    "flex_ev": _mc["flex_ev"],
+                    "per_leg_sim_prob": _mc["per_leg_sim_prob"],
+                    "n_sims": _mc["n_sims"],
+                    "kill_switch": _ks,
+                    "unified_verdict": _vd,
+                    "confidence": _cf,
                 }, indent=2)
 
-                ai_advice = ai_lab_analysis(legs_for_ai, mc_for_ai, settings["course"])
+                ai_advice = ai_lab_analysis(legs_for_ai, mc_for_ai, lab_results["course"])
 
-                st.markdown(f"""
-                <div class="glass-card" style="padding:20px;">
-                    <div style="font-size:0.75rem;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">
-                        Claude AI Unified Analysis
-                    </div>
-                    <div style="font-size:0.85rem;color:#e2e8f0;line-height:1.7;white-space:pre-wrap;">{ai_advice}</div>
+                st.session_state["lab_ai_advice"] = ai_advice
+
+        # Show cached AI advice (persists across reruns)
+        if st.session_state.get("lab_ai_advice"):
+            st.markdown(f"""
+            <div class="glass-card" style="padding:20px;">
+                <div style="font-size:0.75rem;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">
+                    Claude AI Unified Analysis
                 </div>
-                """, unsafe_allow_html=True)
+                <div style="font-size:0.85rem;color:#e2e8f0;line-height:1.7;white-space:pre-wrap;">{st.session_state["lab_ai_advice"]}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
 
 # ============================================================
@@ -4935,6 +4960,50 @@ def tab_live_scanner(proj_df: pd.DataFrame, settings: dict):
             styled = scan_df.style.map(color_edge, subset=["Edge"]).map(color_conf, subset=["Conf"])
             st.dataframe(styled, use_container_width=True, hide_index=True, height=400)
 
+            # ── Per-Leg Log Bet Buttons ──
+            st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+            st.markdown("**Log Individual Bets to Quant System**")
+            st.markdown('<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:8px;">Click any leg below to send it directly to the Quant System Bet Logger for Kelly sizing and risk analysis.</div>', unsafe_allow_html=True)
+
+            # Check if a bet was just logged (show success message)
+            if st.session_state.get("_scanner_bet_logged"):
+                logged = st.session_state["_scanner_bet_logged"]
+                st.success(f"Sent to Quant System: {logged['player']} {logged['direction'].upper()} {logged['stat']} @ {logged['line']} — Switch to the Quant System tab to evaluate.")
+                del st.session_state["_scanner_bet_logged"]
+
+            for idx, s in enumerate(filtered):
+                edge_color = "#4ade80" if s["edge"] >= 0.08 else "#60a5fa" if s["edge"] >= 0.05 else "#fbbf24" if s["edge"] >= 0.02 else "#f87171"
+                conf_color = "#4ade80" if s["confidence"] == "HIGH" else "#fbbf24" if s["confidence"] == "MEDIUM" else "#fb923c" if s["confidence"] == "LOW" else "#f87171"
+
+                lb_cols = st.columns([4, 1])
+                with lb_cols[0]:
+                    st.markdown(
+                        f'<div style="font-size:0.82rem;padding:4px 0;">'
+                        f'<b>{s["player"]}</b> — {s["stat"]} <span style="color:{edge_color};">{s["side"]}</span> {s["line"]} '
+                        f'| Proj: {s["projection"]:.1f} | Prob: {s["prob"]*100:.1f}% '
+                        f'| <span style="color:{edge_color};">Edge: {s["edge"]*100:+.1f}%</span> '
+                        f'| <span style="color:{conf_color};">{s["confidence"]}</span>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                with lb_cols[1]:
+                    if st.button("Log Bet", key=f"log_bet_scan_{idx}"):
+                        # Pre-populate Quant System Bet Logger fields
+                        st.session_state["qs_player"] = s["player"]
+                        st.session_state["qs_stat"] = s.get("stat_internal", "birdies")
+                        st.session_state["qs_direction"] = s["side"].lower()
+                        st.session_state["qs_line"] = s["line"]
+                        st.session_state["qs_prob"] = round(s["prob"], 2)
+                        st.session_state["qs_proj"] = round(s["projection"], 1)
+                        st.session_state["qs_std"] = round(s.get("std", 1.5), 1)
+                        st.session_state["_scanner_bet_logged"] = {
+                            "player": s["player"],
+                            "stat": s["stat"],
+                            "direction": s["side"].lower(),
+                            "line": s["line"],
+                        }
+                        st.rerun()
+
         # Select legs to send to PrizePicks Lab
         st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
         st.markdown("**Select Legs for PrizePicks Lab**")
@@ -5164,7 +5233,7 @@ def tab_quant_system(proj_df: pd.DataFrame, settings: dict):
             qc1, qc2, qc3 = st.columns(3)
             with qc1:
                 q_player = st.text_input("Player", key="qs_player")
-                q_stat = st.selectbox("Stat", ["birdies", "bogey_free", "fantasy_score", "strokes", "gir", "fairways", "putts", "pars"], key="qs_stat")
+                q_stat = st.selectbox("Stat", ["birdies", "bogeys", "bogey_free", "strokes", "gir", "fairways", "putts", "pars", "fantasy_score", "birdies_matchup", "holes_played"], key="qs_stat")
             with qc2:
                 q_direction = st.selectbox("Direction", ["over", "under"], key="qs_direction")
                 q_line = st.number_input("Line", value=3.5, step=0.5, key="qs_line")
