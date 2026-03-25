@@ -2273,53 +2273,40 @@ def mc_prop_simulation(proj: float, std: float, line: float, n_sims: int = 5000,
     # ── SPECIAL: Holes Played (cut/no-cut simulation) ──────────────
     if stat_type == "holes_played":
         # Line is typically 36.5 — over = make cut (72 holes), under = miss cut (36)
-        # Simulate round-by-round: R1+R2 scores determine cut, then R3+R4 if made cut
+        # Vectorized cut simulation: R1+R2 for player vs field → 36 or 72
         field_sgs = field_sg_list or [0.0] * 120
         field_size = max(len(field_sgs), 30)
-        cut_pct = 65 / field_size  # ~top 65 + ties make cut
+        cut_idx = min(65, field_size)  # top 65 + ties make cut
 
-        # Player's expected score relative to par per round
-        player_mean_per_round = -player_sg  # SG → strokes relative to par (negative SG = over par)
-        round_std = 2.8  # typical round-to-round std in strokes
+        player_mean_36 = -player_sg * 2  # 36-hole expected score (SG → strokes, 2 rounds)
+        round_std_36 = 2.8 * np.sqrt(2)  # 36-hole std (two rounds combined)
 
         holes_sims = np.zeros(n_sims * 5)
         engine_p_over = []
 
         for eng_idx in range(5):
-            eng_sims = np.zeros(n_sims)
-            for s in range(n_sims):
-                # Simulate R1 and R2 for player
-                if eng_idx == 0:  # Normal
-                    r1 = rng.normal(player_mean_per_round, round_std)
-                    r2 = rng.normal(player_mean_per_round, round_std)
-                elif eng_idx == 1:  # T-distribution
-                    r1 = player_mean_per_round + round_std * rng.standard_t(8)
-                    r2 = player_mean_per_round + round_std * rng.standard_t(8)
-                elif eng_idx == 2:  # Skew-adjusted
-                    r1 = rng.normal(player_mean_per_round, round_std * 0.9) + rng.exponential(round_std * 0.3) * 0.15
-                    r2 = rng.normal(player_mean_per_round, round_std * 0.9) + rng.exponential(round_std * 0.3) * 0.15
-                elif eng_idx == 3:  # Mean-revert
-                    rev_mean = player_mean_per_round * 0.85  # revert toward 0
-                    r1 = rng.normal(rev_mean, round_std * 1.05)
-                    r2 = rng.normal(rev_mean, round_std * 1.05)
-                else:  # Vol-cluster
-                    v = rng.gamma(4, 0.25)
-                    r1 = rng.normal(player_mean_per_round, round_std * v)
-                    v = rng.gamma(4, 0.25)
-                    r2 = rng.normal(player_mean_per_round, round_std * v)
+            # Vectorized: simulate all n_sims at once
+            if eng_idx == 0:  # Normal
+                player_36 = rng.normal(player_mean_36, round_std_36, n_sims)
+            elif eng_idx == 1:  # T-dist
+                player_36 = player_mean_36 + round_std_36 * rng.standard_t(8, n_sims)
+            elif eng_idx == 2:  # Skew
+                player_36 = rng.normal(player_mean_36, round_std_36 * 0.9, n_sims) + rng.exponential(round_std_36 * 0.2, n_sims)
+            elif eng_idx == 3:  # Mean-revert
+                rev_mean = player_mean_36 * 0.85
+                player_36 = rng.normal(rev_mean, round_std_36 * 1.05, n_sims)
+            else:  # Vol-cluster
+                v = rng.gamma(4, 0.25, n_sims)
+                player_36 = rng.normal(player_mean_36, round_std_36 * v, n_sims)
 
-                player_36 = r1 + r2
+            # Vectorized field: (n_sims, field_size) matrix
+            field_36 = rng.normal(0, round_std_36, (n_sims, field_size))
+            # Find the cut line (65th lowest score) for each sim
+            field_sorted = np.sort(field_36, axis=1)
+            cut_line_scores = field_sorted[:, min(cut_idx - 1, field_size - 1)]
 
-                # Simulate field's 36-hole scores to determine cut line
-                field_36 = rng.normal(0, round_std * np.sqrt(2), field_size)
-                all_scores = np.append(field_36, player_36)
-                all_scores.sort()
-                cut_idx = min(int(field_size * cut_pct), len(all_scores) - 1)
-                cut_line_score = all_scores[cut_idx]
-
-                # Did player make cut?
-                made_cut = player_36 <= cut_line_score
-                eng_sims[s] = 72.0 if made_cut else 36.0
+            made_cut = player_36 <= cut_line_scores
+            eng_sims = np.where(made_cut, 72.0, 36.0)
 
             p_over = float(np.mean(eng_sims > line))
             engine_p_over.append(p_over)
@@ -2683,6 +2670,7 @@ STAT_STD = {
     "fantasy_score":  12.0,
     "birdies":        1.5,
     "bogey_free":     0.42,   # binary-ish, so std of Bernoulli
+    "bogeys":         1.2,    # bogeys or worse per round
     "strokes":        2.8,
     "gir":            2.5,    # greens in regulation count (out of 18)
     "fairways":       2.2,    # fairways hit count (out of 14)
@@ -2701,6 +2689,9 @@ SG_TO_STAT_SENSITIVITY = {
     },
     "bogey_free": {
         "sg_ott": 0.04, "sg_app": 0.06, "sg_arg": 0.05, "sg_putt": 0.03,
+    },
+    "bogeys": {
+        "sg_ott": -0.3, "sg_app": -0.5, "sg_arg": -0.4, "sg_putt": -0.3,
     },
     "strokes": {
         "sg_ott": -0.9, "sg_app": -1.1, "sg_arg": -0.8, "sg_putt": -1.0,
@@ -2739,6 +2730,7 @@ def project_pp_stat(stat_type: str, player_proj: dict) -> tuple:
         "fantasy_score": "fantasy_score",
         "birdies": "birdies_per_round",
         "bogey_free": "bogey_free_pct",
+        "bogeys": "bogeys_per_round",
         "strokes": "scoring_avg",
         "gir": "gir_pct",
         "fairways": "fairways_pct",
@@ -2790,6 +2782,8 @@ def project_pp_stat(stat_type: str, player_proj: dict) -> tuple:
     # Clamp projections to reasonable ranges
     if stat_type == "birdies":
         projected = max(0.5, projected)
+    elif stat_type == "bogeys":
+        projected = max(0.5, min(8.0, projected))
     elif stat_type == "bogey_free":
         projected = max(0.01, min(0.95, projected))
     elif stat_type == "strokes":
@@ -4076,12 +4070,15 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
     # Stat type mapping
     pp_internal_map = {
         "Birdies Or Better": "birdies", "Birdies or Better": "birdies",
+        "Birdies": "birdies",
+        "Bogeys or Worse": "bogeys", "Bogeys Or Worse": "bogeys",
         "Strokes": "strokes", "Total Strokes": "strokes",
         "Greens In Regulation": "gir", "Greens in Regulation": "gir",
-        "Fairways Hit": "fairways", "Pars": "pars", "Birdies": "birdies",
+        "Fairways Hit": "fairways", "Pars": "pars",
         "Putts": "putts", "Fantasy Score": "fantasy_score",
-        "Bogey-Free Holes": "bogey_free",
+        "Bogey-Free Holes": "bogey_free", "Bogey Free Holes": "bogey_free",
         "Birdies or Better Matchup": "birdies_matchup",
+        "Birdies Or Better Matchup": "birdies_matchup",
         "Holes Played": "holes_played",
     }
 
@@ -4222,12 +4219,20 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
         # ════════════════════════════════════════════════════════
         sim_data = {}
         sim_ran = False
-        with st.spinner("Phase 1/4: Running full 4-round tournament simulation (10,000 tournaments)..."):
+        # Scale tournament sims: 1500 sims is statistically robust for
+        # win/cut/top-10 probabilities while staying within Streamlit timeout.
+        # Also cap field to top 60 by SG to reduce per-sim cost.
+        tourney_n_sims = min(settings.get("n_sims", 5000), 1500)
+        sim_field = proj_df.copy()
+        if len(sim_field) > 60:
+            sim_field = sim_field.nlargest(60, "sg_regressed") if "sg_regressed" in sim_field.columns else sim_field.head(60)
+
+        with st.spinner(f"Phase 1/4: Running 4-round tournament simulation ({tourney_n_sims} tournaments, {len(sim_field)} players)..."):
             try:
                 from simulation.pipeline_bridge import SimulationBridge
-                sim_bridge = SimulationBridge(n_sims=10000)
+                sim_bridge = SimulationBridge(n_sims=tourney_n_sims)
                 sim_df = sim_bridge.run_tournament_simulation(
-                    field_projections=proj_df,
+                    field_projections=sim_field,
                     course_name=settings.get("course", ""),
                 )
                 sim_ran = True
@@ -4722,12 +4727,15 @@ def tab_live_scanner(proj_df: pd.DataFrame, settings: dict):
     # Stat type mapping
     pp_internal_map = {
         "Birdies Or Better": "birdies", "Birdies or Better": "birdies",
+        "Birdies": "birdies",
+        "Bogeys or Worse": "bogeys", "Bogeys Or Worse": "bogeys",
         "Strokes": "strokes", "Total Strokes": "strokes",
         "Greens In Regulation": "gir", "Greens in Regulation": "gir",
-        "Fairways Hit": "fairways", "Pars": "pars", "Birdies": "birdies",
+        "Fairways Hit": "fairways", "Pars": "pars",
         "Putts": "putts", "Fantasy Score": "fantasy_score",
-        "Bogey-Free Holes": "bogey_free",
+        "Bogey-Free Holes": "bogey_free", "Bogey Free Holes": "bogey_free",
         "Birdies or Better Matchup": "birdies_matchup",
+        "Birdies Or Better Matchup": "birdies_matchup",
         "Holes Played": "holes_played",
     }
 
@@ -4765,7 +4773,10 @@ def tab_live_scanner(proj_df: pd.DataFrame, settings: dict):
 
                 player_name = pp_line["player"]
                 stat_display = pp_line["stat_type"]
-                stat_type = pp_internal_map.get(stat_display, "birdies")
+                stat_type = pp_internal_map.get(stat_display, None)
+                if stat_type is None:
+                    # Unknown stat type — skip to avoid false projections
+                    continue
                 line_val = pp_line["line"]
 
                 # Find player in projection model
@@ -4803,8 +4814,8 @@ def tab_live_scanner(proj_df: pd.DataFrame, settings: dict):
                             opp_sg = float(opp_match.iloc[0].get("sg_regressed", 0))
                     mc_kwargs["opponent_sg"] = opp_sg
 
-                # Run MC simulation (5000x, 5 engines)
-                mc = mc_prop_simulation(proj_val, proj_std, line_val, n_sims=5000, **mc_kwargs)
+                # Run MC simulation (2000x per engine, 10K total across 5 engines)
+                mc = mc_prop_simulation(proj_val, proj_std, line_val, n_sims=2000, **mc_kwargs)
 
                 p_over = mc["p_over"]
                 p_under = mc["p_under"]
@@ -6273,7 +6284,7 @@ def tab_next_week_prep(proj_df: pd.DataFrame, settings: dict):
         st.markdown(f'<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:12px;">'
                     f'Monte Carlo simulation of full tournament outcomes at {t_course}.</div>', unsafe_allow_html=True)
 
-        n_sims_prep = st.slider("Simulations", 1000, 10000, 5000, 1000, key="prep_sim_n")
+        n_sims_prep = st.slider("Simulations", 500, 3000, 1500, 500, key="prep_sim_n")
 
         if st.button("Run Pre-Tournament Simulation", key="run_next_week_sim", type="primary"):
             with st.spinner(f"Simulating {n_sims_prep} tournaments at {t_course}..."):
