@@ -1224,35 +1224,65 @@ def apply_course_fit(sg_dict: dict, course_name: str) -> dict:
     """Reweight a player's SG profile by course-specific demands.
 
     Applies the course's custom SG weights and distance/accuracy modifiers.
+    Returns BOTH the total course-adjusted SG AND per-component adjusted values
+    so downstream projections can use course-aware inputs.
 
     Args:
         sg_dict: Dict with keys sg_ott, sg_app, sg_arg, sg_putt (and optionally sg_total).
         course_name: Key into COURSE_PROFILES.
 
     Returns:
-        Dict with 'course_adj_total', per-category contributions, and fit metadata.
+        Dict with 'course_adj_total', 'adjusted_components' (per-cat course-weighted SG),
+        per-category contributions, and fit metadata.
     """
     profile = COURSE_PROFILES.get(course_name)
     if profile is None:
-        # Fall back to default weights
+        # Fall back to default weights — return components unchanged
         total = sum(sg_dict.get(k, 0.0) * v for k, v in SG_WEIGHTS.items())
         return {
             "course_adj_total": round(total, 4),
             "course_found": False,
             "contributions": {k: round(sg_dict.get(k, 0.0) * v, 4) for k, v in SG_WEIGHTS.items()},
+            "adjusted_components": {
+                "sg_ott": sg_dict.get("sg_ott", 0.0),
+                "sg_app": sg_dict.get("sg_app", 0.0),
+                "sg_arg": sg_dict.get("sg_arg", 0.0),
+                "sg_putt": sg_dict.get("sg_putt", 0.0),
+            },
         }
 
     cw = profile["sg_weights"]
     contributions = {}
+    adjusted_components = {}
     total = 0.0
+
+    # Default weights for normalization reference
+    default_weights = SG_WEIGHTS  # {sg_ott: 0.18, sg_app: 0.30, sg_arg: 0.17, sg_putt: 0.35}
+
+    # Map course profile key names (sg_atg) to our standard (sg_arg)
+    _cw_normalized = {}
+    for k, v in cw.items():
+        norm_key = "sg_arg" if k == "sg_atg" else k
+        _cw_normalized[norm_key] = v
 
     for cat in ["sg_ott", "sg_app", "sg_arg", "sg_putt"]:
         val = sg_dict.get(cat, 0.0)
-        weight = cw.get(cat, SG_WEIGHTS.get(cat, 0.25))
-        # Normalize weights to sum to 1
-        contrib = val * weight
+        course_weight = _cw_normalized.get(cat, default_weights.get(cat, 0.25))
+        default_weight = default_weights.get(cat, 0.25)
+
+        # Contribution to total (weighted)
+        contrib = val * course_weight
         contributions[cat] = round(contrib, 4)
         total += contrib
+
+        # Per-component course adjustment: scale the raw SG by the ratio of
+        # course weight to default weight. If a course emphasizes approach (0.42)
+        # vs default (0.30), a player's sg_app is amplified by 0.42/0.30 = 1.4x
+        if default_weight > 0:
+            weight_ratio = course_weight / default_weight
+        else:
+            weight_ratio = 1.0
+        adjusted_components[cat] = round(val * weight_ratio, 4)
 
     # Apply distance bonus (positive SG OTT distance advantage)
     dist_bonus = profile.get("distance_bonus", 0.0)
@@ -1269,11 +1299,17 @@ def apply_course_fit(sg_dict: dict, course_name: str) -> dict:
     else:
         acc_adj = 0.0
 
+    # Also fold distance/accuracy adjustments into the OTT component
+    ott_extra = dist_adj + acc_adj
+    if ott_extra != 0:
+        adjusted_components["sg_ott"] = round(adjusted_components["sg_ott"] + ott_extra, 4)
+
     return {
         "course_adj_total": round(total, 4),
         "course_found": True,
         "course_name": course_name,
         "contributions": contributions,
+        "adjusted_components": adjusted_components,
         "distance_adj": round(dist_adj, 4),
         "accuracy_adj": round(acc_adj, 4),
         "bermuda_greens": profile.get("bermuda_greens", False),
@@ -2981,8 +3017,19 @@ def _enrich_player_row(row: dict, course: str) -> dict:
 
     # Apply course fit
     fitted = apply_course_fit(sg_dict, course)
-    row["sg_fitted"] = round(fitted["course_adj_total"], 3)
-    row["course_delta"] = round(fitted["course_adj_total"] - row["sg_total"], 3)
+    # course_delta = course-weighted total minus default-weighted total
+    # This isolates the course-specific advantage on a proper scale (~-0.5 to +0.5)
+    default_weighted = sum(sg_dict.get(k, 0.0) * v for k, v in SG_WEIGHTS.items())
+    row["course_delta"] = round(fitted["course_adj_total"] - default_weighted, 3)
+    # sg_fitted = player's total SG adjusted for course fit (same scale as sg_total)
+    row["sg_fitted"] = round(row["sg_total"] + row["course_delta"], 3)
+
+    # Store per-component course-adjusted SG values for projection use
+    adj = fitted.get("adjusted_components", {})
+    row["sg_ott_adj"] = round(adj.get("sg_ott", row["sg_ott"]), 4)
+    row["sg_app_adj"] = round(adj.get("sg_app", row["sg_app"]), 4)
+    row["sg_arg_adj"] = round(adj.get("sg_arg", row["sg_arg"]), 4)
+    row["sg_putt_adj"] = round(adj.get("sg_putt", row["sg_putt"]), 4)
 
     # Bayesian shrinkage
     row["sg_shrunk"] = round(bayesian_shrink(row["sg_fitted"], row["events"]), 3)
@@ -4153,12 +4200,18 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
             leg_side = st.selectbox("Side", ["OVER", "UNDER"], index=side_idx,
                                      key=f"lab_side_{i}", label_visibility="collapsed")
 
-        # Quick projection preview
+        # Quick projection preview — use course-adjusted SG components
         internal_stat = pp_internal_map.get(leg_stat, "strokes")
         player_match = proj_df[proj_df["player"] == leg_player]
         if not player_match.empty:
             p_row = player_match.iloc[0]
-            sg_proj_dict = {k: p_row[k] for k in ["sg_ott", "sg_app", "sg_arg", "sg_putt"]}
+            # Use course-adjusted SG values (sg_*_adj) for projections
+            sg_proj_dict = {
+                "sg_ott": p_row.get("sg_ott_adj", p_row["sg_ott"]),
+                "sg_app": p_row.get("sg_app_adj", p_row["sg_app"]),
+                "sg_arg": p_row.get("sg_arg_adj", p_row["sg_arg"]),
+                "sg_putt": p_row.get("sg_putt_adj", p_row["sg_putt"]),
+            }
             pv, ps = project_pp_stat(internal_stat, sg_proj_dict)
             leg_prob = prob_over(pv, leg_line, ps) if leg_side == "OVER" else prob_under(pv, leg_line, ps)
         else:
@@ -5056,7 +5109,13 @@ def tab_live_scanner(proj_df: pd.DataFrame, settings: dict):
                     continue
 
                 p_row = player_match.iloc[0]
-                sg_proj = {k: p_row[k] for k in ["sg_ott", "sg_app", "sg_arg", "sg_putt"]}
+                # Use course-adjusted SG values for projections
+                sg_proj = {
+                    "sg_ott": p_row.get("sg_ott_adj", p_row["sg_ott"]),
+                    "sg_app": p_row.get("sg_app_adj", p_row["sg_app"]),
+                    "sg_arg": p_row.get("sg_arg_adj", p_row["sg_arg"]),
+                    "sg_putt": p_row.get("sg_putt_adj", p_row["sg_putt"]),
+                }
                 player_sg_total = float(p_row.get("sg_regressed", sum(sg_proj.values())))
 
                 # Project stat
