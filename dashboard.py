@@ -4688,11 +4688,12 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
                 _vd = lab_results["verdict"]
                 _cf = lab_results["confidence"]
                 _ks = lab_results["ks_status"]
+                _pp_odds = settings.get("pp_decimal_odds", 1.909)
 
                 legs_for_ai = json.dumps([{
                     "player": pk["player"], "stat": pk["stat"], "line": pk["line"],
                     "side": pk["side"], "projection": pk["proj"],
-                    "mc_prob": pk["prob"], "edge": pk["prob"] - 1/pp_decimal_odds,
+                    "mc_prob": pk["prob"], "edge": pk["prob"] - 1/_pp_odds,
                     "engine_agreement": pk["mc"]["engine_agreement"],
                     "ci_80": pk["mc"]["ci_80"],
                     "win_prob": pk.get("sim", {}).get("win_prob", 0),
