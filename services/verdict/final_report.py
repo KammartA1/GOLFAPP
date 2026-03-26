@@ -708,15 +708,16 @@ class FinalVerdict:
             # Check stake trajectory — are limits tightening?
             stakes = [b.stake for b in bets if b.stake > 0]
             if len(stakes) >= 20:
-                first_half_avg = float(np.mean(stakes[len(stakes)//2:]))
-                second_half_avg = float(np.mean(stakes[:len(stakes)//2]))
-                stake_ratio = second_half_avg / max(first_half_avg, 1)
+                # Bets ordered DESC (newest first): [:half] = recent, [half:] = older
+                recent_avg = float(np.mean(stakes[:len(stakes)//2]))
+                older_avg = float(np.mean(stakes[len(stakes)//2:]))
+                stake_ratio = recent_avg / max(older_avg, 1)
                 details["stake_ratio_recent_vs_old"] = round(stake_ratio, 3)
 
                 if stake_ratio < 0.5:
                     warnings.append(
-                        f"Stakes declining: recent avg ${second_half_avg:.0f} "
-                        f"vs prior ${first_half_avg:.0f}"
+                        f"Stakes declining: recent avg ${recent_avg:.0f} "
+                        f"vs prior ${older_avg:.0f}"
                     )
                     recommendations.append("Review sportsbook limits — may be getting limited")
 
