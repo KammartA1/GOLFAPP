@@ -4774,22 +4774,26 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
                 )
             with lb_cols[1]:
                 if st.button("Log Bet", key=f"log_bet_lab_{idx}"):
-                    # Log to Quant Engine
-                    engine = _get_quant_engine(settings)
-                    decision = engine.evaluate_bet(
-                        player=pk["player"],
-                        bet_type=BetType.OVER if pk["side"] == "OVER" else BetType.UNDER,
-                        stat_type=pk.get("stat_internal", "birdies"),
-                        line=pk["line"],
-                        direction=pk["side"].lower(),
-                        model_prob=pk["prob"],
-                        model_projection=pk["proj"],
-                        model_std=pk.get("std", 1.5),
-                        odds_american=-110,
-                    )
-                    bet_amount = decision.get("stake", bankroll * 0.02) if decision.get("approved") else bankroll * 0.02
-                    if decision.get("approved"):
-                        engine.place_bet(decision)
+                    # Try to log through Quant Engine (may fail if engine not fully configured)
+                    bet_amount = bankroll * 0.02
+                    try:
+                        engine = _get_quant_engine(settings)
+                        decision = engine.evaluate_bet(
+                            player=pk["player"],
+                            bet_type=BetType.OVER if pk["side"] == "OVER" else BetType.UNDER,
+                            stat_type=pk.get("stat_internal", "birdies"),
+                            line=pk["line"],
+                            direction=pk["side"].lower(),
+                            model_prob=pk["prob"],
+                            model_projection=pk["proj"],
+                            model_std=pk.get("std", 1.5),
+                            odds_american=-110,
+                        )
+                        if decision.get("approved"):
+                            bet_amount = decision.get("stake", bet_amount)
+                            engine.place_bet(decision)
+                    except Exception:
+                        pass
                     # Also log to session_state logged_bets for Settings tab
                     st.session_state["logged_bets"].append({
                         "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -4838,23 +4842,26 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
             st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
             if st.button("Log Parlay", key="log_parlay_lab", type="primary"):
                 legs_desc = " + ".join(f"{pk['player']} {pk['side']} {pk['stat']} {pk['line']}" for pk in _pp)
-                # Log parlay to Quant Engine
-                engine = _get_quant_engine(settings)
                 joint_prob = _mc.get("joint_prob", 0)
-                for pk in _pp:
-                    decision = engine.evaluate_bet(
-                        player=pk["player"],
-                        bet_type=BetType.OVER if pk["side"] == "OVER" else BetType.UNDER,
-                        stat_type=pk.get("stat_internal", "birdies"),
-                        line=pk["line"],
-                        direction=pk["side"].lower(),
-                        model_prob=pk["prob"],
-                        model_projection=pk["proj"],
-                        model_std=pk.get("std", 1.5),
-                        odds_american=-110,
-                    )
-                    if decision.get("approved"):
-                        engine.place_bet(decision)
+                # Try to log individual legs through Quant Engine (non-blocking)
+                try:
+                    engine = _get_quant_engine(settings)
+                    for pk in _pp:
+                        decision = engine.evaluate_bet(
+                            player=pk["player"],
+                            bet_type=BetType.OVER if pk["side"] == "OVER" else BetType.UNDER,
+                            stat_type=pk.get("stat_internal", "birdies"),
+                            line=pk["line"],
+                            direction=pk["side"].lower(),
+                            model_prob=pk["prob"],
+                            model_projection=pk["proj"],
+                            model_std=pk.get("std", 1.5),
+                            odds_american=-110,
+                        )
+                        if decision.get("approved"):
+                            engine.place_bet(decision)
+                except Exception:
+                    pass
 
                 # Log parlay to session_state
                 st.session_state["logged_bets"].append({
