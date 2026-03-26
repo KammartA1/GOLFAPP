@@ -13,6 +13,7 @@ Design Philosophy:
 from __future__ import annotations
 
 import logging
+import numpy as np
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -227,7 +228,9 @@ class FailureProtection:
             for r in recent:
                 p = r.model_prob
                 payout = r.odds_decimal - 1.0
-                ev_var = p * (1 - p) * (r.stake * payout) ** 2 + p * (1 - p) * r.stake ** 2
+                # Correct variance: P&L swings from -stake (loss) to +stake*payout (win)
+                pnl_range = r.stake * (payout + 1.0)
+                ev_var = p * (1 - p) * pnl_range ** 2
                 expected_vars.append(ev_var)
             expected_var = float(np.mean(expected_vars))
 

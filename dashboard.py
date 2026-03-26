@@ -2541,6 +2541,7 @@ def mc_parlay_simulation(legs: list, n_sims: int = 5000) -> dict:
 
     # Flex EV
     flex_payouts = {
+        2: {2: 2.25},
         3: {2: 1.25, 3: 2.25},
         4: {2: 0.4, 3: 1.5, 4: 5.0},
         5: {2: 0.0, 3: 0.4, 4: 2.0, 5: 10.0},
@@ -3001,12 +3002,14 @@ def _build_projection_table(df: pd.DataFrame, course: str) -> pd.DataFrame:
     field_sg = proj_df["sg_regressed"].tolist()
     win_probs, t5_probs, t10_probs, t20_probs, cut_probs = [], [], [], [], []
 
-    for _, r in proj_df.iterrows():
-        wp = monte_carlo_win_prob(r["sg_regressed"], field_sg, n_sims=5000)
+    for idx, r in proj_df.iterrows():
+        # Exclude player from field to avoid self-competition bias
+        field_without_self = [sg for i, sg in enumerate(field_sg) if i != idx]
+        wp = monte_carlo_win_prob(r["sg_regressed"], field_without_self, n_sims=5000)
         win_probs.append(wp["win_prob"])
-        t5_probs.append(sg_to_top_n_prob(r["sg_regressed"], field_sg, 5, n_sims=3000))
-        t10_probs.append(sg_to_top_n_prob(r["sg_regressed"], field_sg, 10, n_sims=3000))
-        t20_probs.append(sg_to_top_n_prob(r["sg_regressed"], field_sg, 20, n_sims=3000))
+        t5_probs.append(sg_to_top_n_prob(r["sg_regressed"], field_without_self, 5, n_sims=3000))
+        t10_probs.append(sg_to_top_n_prob(r["sg_regressed"], field_without_self, 10, n_sims=3000))
+        t20_probs.append(sg_to_top_n_prob(r["sg_regressed"], field_without_self, 20, n_sims=3000))
         cut_probs.append(sg_to_make_cut_prob(r["sg_regressed"]))
 
     proj_df["win_prob"] = win_probs
@@ -3561,6 +3564,7 @@ A player with SG +2.0 is elite; +1.0 is very good; 0 is average.
         "n_sims": n_sims,
         "bankroll": bankroll,
         "kelly_mult": kelly_mult,
+        "pp_decimal_odds": 1.909,  # PrizePicks -110 standard
         "data_mode": data_mode,
         "upload": upload,
     }
@@ -3956,6 +3960,10 @@ def tab_betting_edge(proj_df: pd.DataFrame, settings: dict):
     edge_df["bet_edge"] = edge_df["model_prob"] - edge_df["market_implied"]
     edge_df = edge_df[edge_df["bet_edge"] >= min_edge / 100]
     edge_df = edge_df[edge_df["odds"] <= max_odds]
+    # Recompute Kelly using the user's slider value (override the default 0.25)
+    edge_df["kelly"] = edge_df.apply(
+        lambda r: kelly_fraction_calc(r["model_prob"], r["decimal_odds"], fractional=kelly_mult), axis=1
+    )
     edge_df = edge_df.sort_values("bet_edge", ascending=False)
 
     # Summary metrics
@@ -3966,7 +3974,9 @@ def tab_betting_edge(proj_df: pd.DataFrame, settings: dict):
         avg_edge = edge_df["bet_edge"].mean() * 100 if len(edge_df) > 0 else 0
         st.markdown(metric_card("Avg Edge", f"{avg_edge:.1f}%", bet_type, "positive", "blue"), unsafe_allow_html=True)
     with cols[2]:
-        total_kelly = edge_df["kelly"].sum() * kelly_mult if len(edge_df) > 0 else 0
+        # kelly_fraction_calc already applies fractional Kelly (0.25 default)
+        # kelly_mult slider acts as user override — use it INSTEAD of the built-in fraction
+        total_kelly = edge_df["kelly"].sum() if len(edge_df) > 0 else 0
         st.markdown(metric_card("Total Kelly", f"{total_kelly:.1%}", f"of ${bankroll:,.0f}", "neutral", "amber"), unsafe_allow_html=True)
     with cols[3]:
         total_wager = total_kelly * bankroll
@@ -3980,7 +3990,8 @@ def tab_betting_edge(proj_df: pd.DataFrame, settings: dict):
 
     # Edge table
     bet_display = edge_df[["player", "model_prob", "market_implied", "bet_edge", "odds", "kelly"]].copy()
-    bet_display["wager"] = (bet_display["kelly"] * kelly_mult * bankroll).round(0)
+    # kelly already includes fractional Kelly; kelly_mult slider overrides it
+    bet_display["wager"] = (bet_display["kelly"] * bankroll).round(0)
     bet_display.columns = ["Player", "Model Prob", "Market Implied", "Edge", "Odds", "Kelly", "Wager ($)"]
 
     st.dataframe(
@@ -4321,7 +4332,7 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
         with st.spinner("Phase 3/4: Edge analysis, risk gates, Kelly sizing..."):
             # Kelly sizing per leg
             bankroll = settings.get("bankroll", 1000)
-            pp_decimal_odds = 1.82  # PrizePicks standard payout
+            pp_decimal_odds = settings.get("pp_decimal_odds", 1.909)  # PrizePicks -110 standard
             if _KELLY_AVAILABLE:
                 try:
                     kelly_calc = KellyCriterion()
@@ -4405,7 +4416,7 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
         leg_data = []
         for pk in parlay_picks:
             mc = pk["mc"]
-            pp_be = 1.0 / 1.82
+            pp_be = 1.0 / pp_decimal_odds
             edge = pk["prob"] - pp_be
             sim_info = pk.get("sim", {})
             k_info = kelly_results.get(pk["player"], {})
@@ -4675,7 +4686,7 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
                 legs_for_ai = json.dumps([{
                     "player": pk["player"], "stat": pk["stat"], "line": pk["line"],
                     "side": pk["side"], "projection": pk["proj"],
-                    "mc_prob": pk["prob"], "edge": pk["prob"] - 1/1.82,
+                    "mc_prob": pk["prob"], "edge": pk["prob"] - 1/pp_decimal_odds,
                     "engine_agreement": pk["mc"]["engine_agreement"],
                     "ci_80": pk["mc"]["ci_80"],
                     "win_prob": pk.get("sim", {}).get("win_prob", 0),
@@ -4719,6 +4730,7 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
 def tab_live_scanner(proj_df: pd.DataFrame, settings: dict):
     """Live Scanner — auto-fetches PP props, runs full quant engine on every prop,
     and provides AI-powered analysis for highest-probability selections."""
+    pp_decimal_odds = settings.get("pp_decimal_odds", 1.909)
     st.markdown(section_header("Live Scanner", "&#128225;", "Auto-Scan"), unsafe_allow_html=True)
 
     st.markdown("""
@@ -4848,7 +4860,7 @@ def tab_live_scanner(proj_df: pd.DataFrame, settings: dict):
                 best_prob = max(p_over, p_under)
 
                 # PrizePicks breakeven
-                pp_be = 1.0 / 1.82
+                pp_be = 1.0 / pp_decimal_odds
                 edge = best_prob - pp_be
 
                 # Confidence classification
@@ -5302,7 +5314,7 @@ def tab_quant_system(proj_df: pd.DataFrame, settings: dict):
                 clv_delta = closing - bet["line"]
                 clv_tag = ""
                 if clv_delta != 0:
-                    favorable = (clv_delta > 0 and bet["direction"] == "under") or (clv_delta < 0 and bet["direction"] == "over")
+                    favorable = (clv_delta < 0 and bet["direction"] == "under") or (clv_delta > 0 and bet["direction"] == "over")
                     clv_color = "#00FF88" if favorable else "#FF3358"
                     clv_tag = f' <span style="color:{clv_color};font-size:0.75rem;">(CLV: {clv_delta:+.1f})</span>'
 
@@ -5834,18 +5846,26 @@ def tab_settings(proj_df: pd.DataFrame, settings: dict):
                             st.write(f"{bet['player']} {bet['stat']} {bet['side']} {bet['line']} — ${bet['amount']}")
                         with bcol2:
                             if st.button("Won", key=f"won_{i}"):
-                                payout_map = {"Power Play": 3.0, "Flex Play": 2.25, "Single": 1.82}
-                                payout = payout_map.get(bet["type"], 1.82)
+                                payout_map = {"Power Play": 3.0, "Flex Play": 2.25, "Single": 1.909}
+                                payout = payout_map.get(bet["type"], 1.909)
                                 profit = bet["amount"] * (payout - 1)
                                 st.session_state["logged_bets"][i]["result"] = "won"
                                 st.session_state["logged_bets"][i]["profit"] = profit
                                 st.session_state["bankroll_total"] += profit
+                                # Persist bankroll to DB so it survives refresh
+                                if _DB_AVAILABLE:
+                                    try: save_state_to_db()
+                                    except Exception: pass
                                 st.rerun()
                         with bcol3:
                             if st.button("Lost", key=f"lost_{i}"):
                                 st.session_state["logged_bets"][i]["result"] = "lost"
                                 st.session_state["logged_bets"][i]["profit"] = -bet["amount"]
                                 st.session_state["bankroll_total"] -= bet["amount"]
+                                # Persist bankroll to DB so it survives refresh
+                                if _DB_AVAILABLE:
+                                    try: save_state_to_db()
+                                    except Exception: pass
                                 st.rerun()
         else:
             st.info("No bets logged yet. Use the expander above to log your first bet.")
