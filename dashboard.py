@@ -111,23 +111,68 @@ html, body, [class*="css"] {
 [data-testid="stDecoration"] { display: none; }
 [data-testid="stHeader"] { background: transparent !important; }
 
-/* ── Sidebar — force always visible ────────────────────── */
+/* ── Sidebar — desktop: always visible; mobile: collapsible ── */
 [data-testid="stSidebar"] {
     background: linear-gradient(180deg, #0c1220 0%, #0a0f1a 100%) !important;
     border-right: 1px solid rgba(255,255,255,0.06);
     min-width: 320px !important;
     width: 320px !important;
 }
-[data-testid="stSidebar"][aria-expanded="false"] {
-    min-width: 320px !important;
-    width: 320px !important;
-    margin-left: 0 !important;
-    transform: none !important;
-    display: block !important;
-    visibility: visible !important;
+/* Desktop: keep sidebar always visible, hide collapse control */
+@media (min-width: 769px) {
+    [data-testid="stSidebar"][aria-expanded="false"] {
+        min-width: 320px !important;
+        width: 320px !important;
+        margin-left: 0 !important;
+        transform: none !important;
+        display: block !important;
+        visibility: visible !important;
+    }
+    [data-testid="collapsedControl"] {
+        display: none;
+    }
 }
-[data-testid="collapsedControl"] {
-    display: none;
+/* Mobile: make sidebar collapsible overlay */
+@media (max-width: 768px) {
+    [data-testid="stSidebar"] {
+        min-width: 85vw !important;
+        width: 85vw !important;
+        max-width: 320px !important;
+        z-index: 999 !important;
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        height: 100vh !important;
+        box-shadow: 4px 0 24px rgba(0,0,0,0.6);
+        transition: transform 0.3s ease !important;
+    }
+    [data-testid="stSidebar"][aria-expanded="false"] {
+        transform: translateX(-100%) !important;
+        visibility: hidden !important;
+    }
+    [data-testid="collapsedControl"] {
+        display: block !important;
+        position: fixed !important;
+        top: 8px !important;
+        left: 8px !important;
+        z-index: 1000 !important;
+        background: rgba(12,18,32,0.9) !important;
+        border: 1px solid rgba(255,255,255,0.1) !important;
+        border-radius: 8px !important;
+        padding: 4px !important;
+    }
+    /* Reduce font sizes in sidebar for mobile */
+    [data-testid="stSidebar"] .stMarkdown p,
+    [data-testid="stSidebar"] .stMarkdown li,
+    [data-testid="stSidebar"] label {
+        font-size: 0.8rem !important;
+    }
+    /* Main content needs full width on mobile */
+    .stMainBlockContainer, .block-container {
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+        max-width: 100% !important;
+    }
 }
 [data-testid="stSidebar"] .stMarkdown p,
 [data-testid="stSidebar"] .stMarkdown li,
