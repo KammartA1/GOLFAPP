@@ -4237,6 +4237,24 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
         sim_field = proj_df.copy()
         if len(sim_field) > 60:
             sim_field = sim_field.nlargest(60, "sg_regressed") if "sg_regressed" in sim_field.columns else sim_field.head(60)
+        # Rename columns to match SimulationBridge expected format
+        # Use sg_regressed (Bayesian-adjusted) as proj_sg_total for more accurate simulation
+        if "sg_regressed" in sim_field.columns:
+            sim_field["proj_sg_total"] = sim_field["sg_regressed"]
+        elif "sg_total" in sim_field.columns:
+            sim_field["proj_sg_total"] = sim_field["sg_total"]
+        _sim_rename = {
+            "player": "name",
+            "sg_ott": "proj_sg_ott",
+            "sg_app": "proj_sg_app",
+            "sg_arg": "proj_sg_atg",
+            "sg_putt": "proj_sg_putt",
+        }
+        sim_field = sim_field.rename(columns={k: v for k, v in _sim_rename.items() if k in sim_field.columns})
+        # Add fields SimulationBridge uses if missing
+        if "course_fit_score" not in sim_field.columns and "course_delta" in proj_df.columns:
+            # Convert course_delta (SG units, ~-1 to +1) to course_fit_score (0-100 scale)
+            sim_field["course_fit_score"] = 50.0 + sim_field.get("course_delta", pd.Series([0.0] * len(sim_field))) * 25.0
 
         with st.spinner(f"Phase 1/4: Running 4-round tournament simulation ({tourney_n_sims} tournaments, {len(sim_field)} players)..."):
             try:
@@ -4254,6 +4272,14 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
                         player_match = sim_df[sim_df["name"].str.contains(pk["player"], case=False, na=False)] if "name" in sim_df.columns else pd.DataFrame()
                     if not player_match.empty:
                         s_row = player_match.iloc[0]
+                        # Get course_delta and sg_total from proj_df (sim pipeline doesn't carry these)
+                        _proj_match = proj_df[proj_df["player"] == pk["player"]]
+                        _course_delta = 0.0
+                        _sg_total = 0.0
+                        if not _proj_match.empty:
+                            _p = _proj_match.iloc[0]
+                            _course_delta = float(_p.get("course_delta", 0))
+                            _sg_total = float(_p.get("sg_regressed", _p.get("sg_total", 0)))
                         sim_data[pk["player"]] = {
                             "win_prob": float(s_row.get("sim_win_prob", s_row.get("win_prob", 0))),
                             "top5_prob": float(s_row.get("sim_top5_prob", s_row.get("top5_prob", 0))),
@@ -4262,8 +4288,8 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
                             "cut_prob": float(s_row.get("sim_make_cut_prob", s_row.get("make_cut_prob", s_row.get("cut_prob", 0)))),
                             "avg_finish": float(s_row.get("sim_avg_finish", s_row.get("avg_finish", 0))),
                             "avg_score": float(s_row.get("sim_avg_score", s_row.get("avg_score", 0))),
-                            "sg_total": float(s_row.get("sg_regressed", s_row.get("sg_total", 0))),
-                            "course_fit": float(s_row.get("course_delta", s_row.get("course_fit", 0))),
+                            "sg_total": _sg_total,
+                            "course_fit": _course_delta,
                             "sim_ran": True,
                         }
                     pk["sim"] = sim_data.get(pk["player"], {})
@@ -4277,7 +4303,10 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
                             "win_prob": float(p_row.get("win_prob", 0)),
                             "top5_prob": float(p_row.get("top5_prob", 0)),
                             "top10_prob": float(p_row.get("top10_prob", 0)),
+                            "top20_prob": float(p_row.get("top20_prob", 0)),
                             "cut_prob": float(p_row.get("cut_prob", 0)),
+                            "avg_finish": float(p_row.get("avg_finish", 0)),
+                            "avg_score": float(p_row.get("avg_score", 0)),
                             "sg_total": float(p_row.get("sg_regressed", p_row.get("sg_total", 0))),
                             "course_fit": float(p_row.get("course_delta", 0)),
                             "sim_ran": False,
@@ -4307,7 +4336,23 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
                     # Default to 0 (average player) — scanner legs may carry opponent data
                     mc_kwargs["opponent_sg"] = 0.0
 
-                mc = mc_prop_simulation(pk["proj"], pk["std"], pk["line"], n_sims=5000, **mc_kwargs)
+                try:
+                    mc = mc_prop_simulation(pk["proj"], pk["std"], pk["line"], n_sims=5000, **mc_kwargs)
+                except Exception:
+                    # Fallback: use simple normal CDF probability
+                    from scipy.stats import norm
+                    _p = norm.cdf(pk["line"], loc=pk["proj"], scale=max(pk["std"], 0.5))
+                    mc = {
+                        "p_over": round(1 - _p, 4), "p_under": round(_p, 4),
+                        "p_over_by_engine": {"normal": round(1 - _p, 4), "t_dist": round(1 - _p, 4),
+                                             "skew_adj": round(1 - _p, 4), "mean_revert": round(1 - _p, 4),
+                                             "vol_cluster": round(1 - _p, 4)},
+                        "engine_agreement": 1.0, "sim_mean": pk["proj"], "sim_std": pk["std"],
+                        "ci_80": (round(pk["proj"] - 1.28 * pk["std"], 1), round(pk["proj"] + 1.28 * pk["std"], 1)),
+                        "ci_50": (round(pk["proj"] - 0.67 * pk["std"], 1), round(pk["proj"] + 0.67 * pk["std"], 1)),
+                        "n_sims": 0,
+                    }
+
                 if pk["side"] == "OVER":
                     mc_prob = mc["p_over"]
                 else:
@@ -4321,11 +4366,24 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
                         cut_adj = min(1.0, pk["sim"]["cut_prob"] / 0.80)
                         mc_prob = mc_prob * (0.7 + 0.3 * cut_adj)
 
+                mc_prob = min(1.0, max(0.0, mc_prob))
                 pk["prob"] = mc_prob
                 pk["mc"] = mc
                 mc_results.append(mc)
 
-            parlay_mc = mc_parlay_simulation(parlay_picks, n_sims=5000)
+            try:
+                parlay_mc = mc_parlay_simulation(parlay_picks, n_sims=5000)
+            except Exception:
+                # Fallback: compute naive joint probability
+                _naive = 1.0
+                for pk in parlay_picks:
+                    _naive *= pk["prob"]
+                parlay_mc = {
+                    "joint_prob": _naive, "naive_joint": _naive,
+                    "correlation_impact": 1.0, "power_ev": 0.0, "flex_ev": 0.0,
+                    "per_leg_sim_prob": [pk["prob"] for pk in parlay_picks],
+                    "n_sims": 0,
+                }
 
         # ════════════════════════════════════════════════════════
         # PHASE 3: Edge Analysis + Kill Switch + Kelly Sizing
