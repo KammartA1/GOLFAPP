@@ -4254,6 +4254,14 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
                         player_match = sim_df[sim_df["name"].str.contains(pk["player"], case=False, na=False)] if "name" in sim_df.columns else pd.DataFrame()
                     if not player_match.empty:
                         s_row = player_match.iloc[0]
+                        # Get course_delta and sg_total from proj_df (sim pipeline doesn't carry these)
+                        _proj_match = proj_df[proj_df["player"] == pk["player"]]
+                        _course_delta = 0.0
+                        _sg_total = 0.0
+                        if not _proj_match.empty:
+                            _p = _proj_match.iloc[0]
+                            _course_delta = float(_p.get("course_delta", 0))
+                            _sg_total = float(_p.get("sg_regressed", _p.get("sg_total", 0)))
                         sim_data[pk["player"]] = {
                             "win_prob": float(s_row.get("sim_win_prob", s_row.get("win_prob", 0))),
                             "top5_prob": float(s_row.get("sim_top5_prob", s_row.get("top5_prob", 0))),
@@ -4262,8 +4270,8 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
                             "cut_prob": float(s_row.get("sim_make_cut_prob", s_row.get("make_cut_prob", s_row.get("cut_prob", 0)))),
                             "avg_finish": float(s_row.get("sim_avg_finish", s_row.get("avg_finish", 0))),
                             "avg_score": float(s_row.get("sim_avg_score", s_row.get("avg_score", 0))),
-                            "sg_total": float(s_row.get("sg_regressed", s_row.get("sg_total", 0))),
-                            "course_fit": float(s_row.get("course_delta", s_row.get("course_fit", 0))),
+                            "sg_total": _sg_total,
+                            "course_fit": _course_delta,
                             "sim_ran": True,
                         }
                     pk["sim"] = sim_data.get(pk["player"], {})
@@ -4277,7 +4285,10 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
                             "win_prob": float(p_row.get("win_prob", 0)),
                             "top5_prob": float(p_row.get("top5_prob", 0)),
                             "top10_prob": float(p_row.get("top10_prob", 0)),
+                            "top20_prob": float(p_row.get("top20_prob", 0)),
                             "cut_prob": float(p_row.get("cut_prob", 0)),
+                            "avg_finish": float(p_row.get("avg_finish", 0)),
+                            "avg_score": float(p_row.get("avg_score", 0)),
                             "sg_total": float(p_row.get("sg_regressed", p_row.get("sg_total", 0))),
                             "course_fit": float(p_row.get("course_delta", 0)),
                             "sim_ran": False,
