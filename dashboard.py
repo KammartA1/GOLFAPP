@@ -4314,9 +4314,12 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
                     mc_prob = mc["p_under"]
 
                 # Blend MC prob with tournament sim cut probability
-                if pk.get("sim", {}).get("sim_ran") and pk["sim"].get("cut_prob", 0) > 0:
-                    cut_adj = min(1.0, pk["sim"]["cut_prob"] / 0.80)
-                    mc_prob = mc_prob * (0.7 + 0.3 * cut_adj)
+                # Only apply to stats that depend on making the cut (full-tournament stats)
+                cut_dependent_stats = {"holes_played", "strokes", "fantasy_score"}
+                if pk.get("stat_internal") in cut_dependent_stats:
+                    if pk.get("sim", {}).get("sim_ran") and pk["sim"].get("cut_prob", 0) > 0:
+                        cut_adj = min(1.0, pk["sim"]["cut_prob"] / 0.80)
+                        mc_prob = mc_prob * (0.7 + 0.3 * cut_adj)
 
                 pk["prob"] = mc_prob
                 pk["mc"] = mc
@@ -4353,13 +4356,16 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
                     for pk in parlay_picks:
                         edge_val = pk["prob"] - (1.0 / pp_decimal_odds)
                         sim_info = pk.get("sim", {})
+                        # Weights: predictive=0.40, course_fit=0.10, informational=0.15, structural=0.05/0.15, market=0.30/0.20
+                        structural_w = 0.15 if sim_info.get("cut_prob", 0.5) > 0.75 else 0.05
+                        market_w = 1.0 - (0.40 + 0.10 + 0.15 + structural_w)  # ensures sum = 1.0
                         edge_summary[pk["player"]] = {
                             "total_edge": edge_val,
-                            "predictive": edge_val * 0.40,  # SG model contribution
-                            "course_fit": sim_info.get("course_fit", 0) * 0.02,
-                            "informational": edge_val * 0.15,  # timing/data advantage
-                            "structural": edge_val * 0.15 if sim_info.get("cut_prob", 0.5) > 0.75 else edge_val * 0.05,
-                            "market": edge_val * 0.30,  # line inefficiency
+                            "predictive": edge_val * 0.40,
+                            "course_fit": edge_val * 0.10,
+                            "informational": edge_val * 0.15,
+                            "structural": edge_val * structural_w,
+                            "market": edge_val * market_w,
                         }
                 except Exception:
                     pass
@@ -4723,6 +4729,161 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
             </div>
             """, unsafe_allow_html=True)
 
+    # ── BET LOGGING (always visible when model results exist) ──
+    lab_results = st.session_state.get("lab_model_results")
+    if lab_results:
+        st.markdown("<div style='height:24px;'></div>", unsafe_allow_html=True)
+        st.markdown("## Log Bets")
+
+        _pp = lab_results["parlay_picks"]
+        _mc = lab_results.get("parlay_mc", {})
+        pp_decimal_odds = settings.get("pp_decimal_odds", 1.909)
+        bankroll = settings.get("bankroll", 1000)
+
+        # Initialize logged_bets if needed
+        if "logged_bets" not in st.session_state:
+            st.session_state["logged_bets"] = []
+
+        # ── Log Individual Legs ──
+        st.markdown("**Log Individual Bets to Quant System**")
+        st.markdown('<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:8px;">Click any leg to log it as an individual bet through the Quant Engine for Kelly sizing and risk analysis.</div>', unsafe_allow_html=True)
+
+        # Check if a bet was just logged (show success message)
+        if st.session_state.get("_lab_bet_logged"):
+            logged_msg = st.session_state["_lab_bet_logged"]
+            st.success(f"Logged: {logged_msg['player']} {logged_msg['side'].upper()} {logged_msg['stat']} @ {logged_msg['line']} — ${logged_msg.get('amount', 0):.0f}")
+            del st.session_state["_lab_bet_logged"]
+
+        for idx, pk in enumerate(_pp):
+            pp_be = 1.0 / pp_decimal_odds
+            edge = pk["prob"] - pp_be
+            edge_color = "#4ade80" if edge >= 0.08 else "#60a5fa" if edge >= 0.05 else "#fbbf24" if edge >= 0.02 else "#f87171"
+            conf = "HIGH" if edge >= 0.08 else "MEDIUM" if edge >= 0.05 else "LOW"
+            conf_color = "#4ade80" if conf == "HIGH" else "#fbbf24" if conf == "MEDIUM" else "#fb923c"
+
+            lb_cols = st.columns([4, 1])
+            with lb_cols[0]:
+                st.markdown(
+                    f'<div style="font-size:0.82rem;padding:4px 0;">'
+                    f'<b>{pk["player"]}</b> — {pk["stat"]} <span style="color:{edge_color};">{pk["side"]}</span> {pk["line"]} '
+                    f'| Proj: {pk["proj"]:.1f} | Prob: {pk["prob"]*100:.1f}% '
+                    f'| <span style="color:{edge_color};">Edge: {edge*100:+.1f}%</span> '
+                    f'| <span style="color:{conf_color};">{conf}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+            with lb_cols[1]:
+                if st.button("Log Bet", key=f"log_bet_lab_{idx}"):
+                    # Log to Quant Engine
+                    engine = _get_quant_engine(settings)
+                    decision = engine.evaluate_bet(
+                        player=pk["player"],
+                        bet_type=BetType.OVER if pk["side"] == "OVER" else BetType.UNDER,
+                        stat_type=pk.get("stat_internal", "birdies"),
+                        line=pk["line"],
+                        direction=pk["side"].lower(),
+                        model_prob=pk["prob"],
+                        model_projection=pk["proj"],
+                        model_std=pk.get("std", 1.5),
+                        odds_american=-110,
+                    )
+                    bet_amount = decision.get("stake", bankroll * 0.02) if decision.get("approved") else bankroll * 0.02
+                    if decision.get("approved"):
+                        engine.place_bet(decision)
+                    # Also log to session_state logged_bets for Settings tab
+                    st.session_state["logged_bets"].append({
+                        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "player": pk["player"],
+                        "stat": pk["stat"],
+                        "side": pk["side"],
+                        "line": pk["line"],
+                        "amount": round(bet_amount, 2),
+                        "type": "Single",
+                        "result": "pending",
+                        "profit": 0,
+                        "prob": round(pk["prob"], 4),
+                        "edge": round(edge, 4),
+                        "projection": round(pk["proj"], 2),
+                    })
+                    if _DB_AVAILABLE:
+                        try: save_state_to_db()
+                        except Exception: pass
+                    st.session_state["_lab_bet_logged"] = {
+                        "player": pk["player"], "stat": pk["stat"],
+                        "side": pk["side"], "line": pk["line"],
+                        "amount": bet_amount,
+                    }
+                    st.rerun()
+
+        # ── Log Parlay ──
+        st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
+        st.markdown("**Log Parlay to Quant System**")
+        st.markdown('<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:8px;">Log the full parlay as a single bet. Choose Power Play or Flex Play.</div>', unsafe_allow_html=True)
+
+        if st.session_state.get("_lab_parlay_logged"):
+            st.success(st.session_state["_lab_parlay_logged"])
+            del st.session_state["_lab_parlay_logged"]
+
+        parlay_cols = st.columns([2, 2, 2, 1])
+        with parlay_cols[0]:
+            parlay_type = st.selectbox("Parlay Type", ["Power Play", "Flex Play"], key="lab_parlay_type")
+        with parlay_cols[1]:
+            PP_PAYOUTS = {2: 3.0, 3: 5.0, 4: 10.0, 5: 20.0, 6: 40.0}
+            n_legs = len(_pp)
+            payout = PP_PAYOUTS.get(n_legs, 3.0) if parlay_type == "Power Play" else 2.25
+            st.markdown(f"<div style='padding-top:28px;font-size:0.85rem;color:#e2e8f0;'>{n_legs}-leg {parlay_type} — {payout:.1f}x payout</div>", unsafe_allow_html=True)
+        with parlay_cols[2]:
+            parlay_amount = st.number_input("Bet Amount ($)", value=25.0, step=5.0, key="lab_parlay_amount")
+        with parlay_cols[3]:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            if st.button("Log Parlay", key="log_parlay_lab", type="primary"):
+                legs_desc = " + ".join(f"{pk['player']} {pk['side']} {pk['stat']} {pk['line']}" for pk in _pp)
+                # Log parlay to Quant Engine
+                engine = _get_quant_engine(settings)
+                joint_prob = _mc.get("joint_prob", 0)
+                for pk in _pp:
+                    decision = engine.evaluate_bet(
+                        player=pk["player"],
+                        bet_type=BetType.OVER if pk["side"] == "OVER" else BetType.UNDER,
+                        stat_type=pk.get("stat_internal", "birdies"),
+                        line=pk["line"],
+                        direction=pk["side"].lower(),
+                        model_prob=pk["prob"],
+                        model_projection=pk["proj"],
+                        model_std=pk.get("std", 1.5),
+                        odds_american=-110,
+                    )
+                    if decision.get("approved"):
+                        engine.place_bet(decision)
+
+                # Log parlay to session_state
+                st.session_state["logged_bets"].append({
+                    "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "player": legs_desc,
+                    "stat": f"{n_legs}-Leg Parlay",
+                    "side": parlay_type,
+                    "line": f"{n_legs} legs",
+                    "amount": parlay_amount,
+                    "type": parlay_type,
+                    "result": "pending",
+                    "profit": 0,
+                    "legs": [{
+                        "player": pk["player"],
+                        "stat": pk["stat"],
+                        "side": pk["side"],
+                        "line": pk["line"],
+                        "prob": round(pk["prob"], 4),
+                        "edge": round(pk["prob"] - (1.0 / pp_decimal_odds), 4),
+                    } for pk in _pp],
+                    "joint_prob": round(joint_prob, 6),
+                    "payout_mult": payout,
+                })
+                if _DB_AVAILABLE:
+                    try: save_state_to_db()
+                    except Exception: pass
+                st.session_state["_lab_parlay_logged"] = f"Logged {n_legs}-leg {parlay_type}: {legs_desc} — ${parlay_amount:.0f} @ {payout:.1f}x"
+                st.rerun()
+
 
 # ============================================================
 # TAB 6 — LIVE SCANNER
@@ -4972,50 +5133,6 @@ def tab_live_scanner(proj_df: pd.DataFrame, settings: dict):
             styled = scan_df.style.map(color_edge, subset=["Edge"]).map(color_conf, subset=["Conf"])
             st.dataframe(styled, use_container_width=True, hide_index=True, height=400)
 
-            # ── Per-Leg Log Bet Buttons ──
-            st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
-            st.markdown("**Log Individual Bets to Quant System**")
-            st.markdown('<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:8px;">Click any leg below to send it directly to the Quant System Bet Logger for Kelly sizing and risk analysis.</div>', unsafe_allow_html=True)
-
-            # Check if a bet was just logged (show success message)
-            if st.session_state.get("_scanner_bet_logged"):
-                logged = st.session_state["_scanner_bet_logged"]
-                st.success(f"Sent to Quant System: {logged['player']} {logged['direction'].upper()} {logged['stat']} @ {logged['line']} — Switch to the Quant System tab to evaluate.")
-                del st.session_state["_scanner_bet_logged"]
-
-            for idx, s in enumerate(filtered):
-                edge_color = "#4ade80" if s["edge"] >= 0.08 else "#60a5fa" if s["edge"] >= 0.05 else "#fbbf24" if s["edge"] >= 0.02 else "#f87171"
-                conf_color = "#4ade80" if s["confidence"] == "HIGH" else "#fbbf24" if s["confidence"] == "MEDIUM" else "#fb923c" if s["confidence"] == "LOW" else "#f87171"
-
-                lb_cols = st.columns([4, 1])
-                with lb_cols[0]:
-                    st.markdown(
-                        f'<div style="font-size:0.82rem;padding:4px 0;">'
-                        f'<b>{s["player"]}</b> — {s["stat"]} <span style="color:{edge_color};">{s["side"]}</span> {s["line"]} '
-                        f'| Proj: {s["projection"]:.1f} | Prob: {s["prob"]*100:.1f}% '
-                        f'| <span style="color:{edge_color};">Edge: {s["edge"]*100:+.1f}%</span> '
-                        f'| <span style="color:{conf_color};">{s["confidence"]}</span>'
-                        f'</div>',
-                        unsafe_allow_html=True,
-                    )
-                with lb_cols[1]:
-                    if st.button("Log Bet", key=f"log_bet_scan_{idx}"):
-                        # Pre-populate Quant System Bet Logger fields
-                        st.session_state["qs_player"] = s["player"]
-                        st.session_state["qs_stat"] = s.get("stat_internal", "birdies")
-                        st.session_state["qs_direction"] = s["side"].lower()
-                        st.session_state["qs_line"] = s["line"]
-                        st.session_state["qs_prob"] = round(s["prob"], 2)
-                        st.session_state["qs_proj"] = round(s["projection"], 1)
-                        st.session_state["qs_std"] = round(s.get("std", 1.5), 1)
-                        st.session_state["_scanner_bet_logged"] = {
-                            "player": s["player"],
-                            "stat": s["stat"],
-                            "direction": s["side"].lower(),
-                            "line": s["line"],
-                        }
-                        st.rerun()
-
         # Select legs to send to PrizePicks Lab
         st.markdown("<div style='height:16px;'></div>", unsafe_allow_html=True)
         st.markdown("**Select Legs for PrizePicks Lab**")
@@ -5140,7 +5257,7 @@ def tab_quant_system(proj_df: pd.DataFrame, settings: dict):
     """, unsafe_allow_html=True)
 
     # Sub-tabs
-    qs_tabs = st.tabs(["Dashboard", "Bet Logger", "CLV Tracker", "Edge Validation", "Risk & Sizing", "Backtest", "System Health"])
+    qs_tabs = st.tabs(["Dashboard", "Bet Logger", "Active Bets", "CLV Tracker", "Edge Validation", "Risk & Sizing", "Backtest", "System Health"])
 
     # ── DASHBOARD ──
     with qs_tabs[0]:
@@ -5235,6 +5352,36 @@ def tab_quant_system(proj_df: pd.DataFrame, settings: dict):
 
         except Exception as e:
             st.info(f"Dashboard will populate as bets are logged. ({e})")
+
+        # ── Quick view: Logged Bets from PrizePicks Lab ──
+        lab_logged = st.session_state.get("logged_bets", [])
+        if lab_logged:
+            st.markdown("---")
+            st.markdown("**PrizePicks Lab Bets**")
+            pending_lab = [b for b in lab_logged if b.get("result") == "pending"]
+            settled_lab = [b for b in lab_logged if b.get("result") in ("won", "lost")]
+            lc1, lc2, lc3, lc4 = st.columns(4)
+            with lc1:
+                st.metric("Lab Bets", len(lab_logged))
+            with lc2:
+                st.metric("Pending", len(pending_lab))
+            with lc3:
+                lab_pnl = sum(b.get("profit", 0) for b in settled_lab)
+                st.metric("Lab P&L", f"${lab_pnl:+,.2f}")
+            with lc4:
+                parlays = [b for b in lab_logged if b.get("type") in ("Power Play", "Flex Play")]
+                st.metric("Parlays", len(parlays))
+            if pending_lab:
+                quick_data = []
+                for b in pending_lab[:10]:
+                    quick_data.append({
+                        "Date": b.get("date", ""),
+                        "Player": b.get("player", "")[:35],
+                        "Type": b.get("type", "Single"),
+                        "Amount": f"${b.get('amount', 0):.0f}",
+                    })
+                st.dataframe(pd.DataFrame(quick_data), use_container_width=True, hide_index=True)
+            st.markdown('<div style="font-size:0.75rem;color:#94a3b8;">Go to the <b>Active Bets</b> tab for full bet management and settlement.</div>', unsafe_allow_html=True)
 
     # ── BET LOGGER ──
     with qs_tabs[1]:
@@ -5343,8 +5490,134 @@ def tab_quant_system(proj_df: pd.DataFrame, settings: dict):
             sdf["pnl"] = sdf["pnl"].apply(lambda x: f"${x:+.2f}")
             st.dataframe(sdf, use_container_width=True, hide_index=True)
 
-    # ── CLV TRACKER ──
+    # ── ACTIVE BETS (from PrizePicks Lab + Quant Engine) ──
     with qs_tabs[2]:
+        st.markdown("**Active Bets — All Logged Bets**")
+        st.markdown('<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:10px;">All bets logged from PrizePicks Lab (individual + parlays) and the Quant Engine Bet Logger appear here.</div>', unsafe_allow_html=True)
+
+        logged_bets = st.session_state.get("logged_bets", [])
+        pending_logged = [b for b in logged_bets if b.get("result") == "pending"]
+        settled_logged = [b for b in logged_bets if b.get("result") in ("won", "lost")]
+
+        # Summary metrics
+        if logged_bets:
+            ab_col1, ab_col2, ab_col3, ab_col4 = st.columns(4)
+            with ab_col1:
+                st.metric("Total Bets", len(logged_bets))
+            with ab_col2:
+                st.metric("Pending", len(pending_logged))
+            with ab_col3:
+                won_bets = [b for b in logged_bets if b.get("result") == "won"]
+                lost_bets = [b for b in logged_bets if b.get("result") == "lost"]
+                wr = len(won_bets) / max(len(won_bets) + len(lost_bets), 1) * 100
+                st.metric("Win Rate", f"{wr:.0f}%" if won_bets or lost_bets else "N/A")
+            with ab_col4:
+                total_pnl = sum(b.get("profit", 0) for b in settled_logged)
+                st.metric("P&L", f"${total_pnl:+,.2f}")
+
+            # Separate singles and parlays
+            singles = [b for b in pending_logged if b.get("type") == "Single"]
+            parlays = [b for b in pending_logged if b.get("type") in ("Power Play", "Flex Play")]
+
+            # ── Pending Singles ──
+            if singles:
+                st.markdown(f"**Pending Singles ({len(singles)})**")
+                for i, bet in enumerate(logged_bets):
+                    if bet.get("result") != "pending" or bet.get("type") != "Single":
+                        continue
+                    edge_val = bet.get("edge", 0)
+                    edge_color = "#4ade80" if edge_val >= 0.08 else "#60a5fa" if edge_val >= 0.05 else "#fbbf24"
+                    bc1, bc2, bc3, bc4 = st.columns([4, 1, 1, 1])
+                    with bc1:
+                        st.markdown(
+                            f'<div style="font-size:0.82rem;">'
+                            f'<b>{bet["player"]}</b> {bet["side"]} {bet["stat"]} @ {bet["line"]} '
+                            f'— ${bet["amount"]:.0f} '
+                            f'| <span style="color:{edge_color};">Edge: {edge_val*100:+.1f}%</span>'
+                            f'</div>', unsafe_allow_html=True)
+                    with bc2:
+                        actual = st.number_input("Result", key=f"qs_res_s_{i}", value=0.0, step=0.5)
+                    with bc3:
+                        if st.button("Won", key=f"qs_won_s_{i}"):
+                            st.session_state["logged_bets"][i]["result"] = "won"
+                            payout = 1.909
+                            st.session_state["logged_bets"][i]["profit"] = bet["amount"] * (payout - 1)
+                            st.session_state["bankroll_total"] = st.session_state.get("bankroll_total", bankroll) + st.session_state["logged_bets"][i]["profit"]
+                            if _DB_AVAILABLE:
+                                try: save_state_to_db()
+                                except Exception: pass
+                            st.rerun()
+                    with bc4:
+                        if st.button("Lost", key=f"qs_lost_s_{i}"):
+                            st.session_state["logged_bets"][i]["result"] = "lost"
+                            st.session_state["logged_bets"][i]["profit"] = -bet["amount"]
+                            st.session_state["bankroll_total"] = st.session_state.get("bankroll_total", bankroll) - bet["amount"]
+                            if _DB_AVAILABLE:
+                                try: save_state_to_db()
+                                except Exception: pass
+                            st.rerun()
+
+            # ── Pending Parlays ──
+            if parlays:
+                st.markdown(f"**Pending Parlays ({len(parlays)})**")
+                for i, bet in enumerate(logged_bets):
+                    if bet.get("result") != "pending" or bet.get("type") not in ("Power Play", "Flex Play"):
+                        continue
+                    legs = bet.get("legs", [])
+                    payout_mult = bet.get("payout_mult", 3.0)
+                    bc1, bc2, bc3 = st.columns([5, 1, 1])
+                    with bc1:
+                        legs_html = "<br>".join(
+                            f'&nbsp;&nbsp;{lg["player"]} {lg["side"]} {lg["stat"]} @ {lg["line"]}'
+                            for lg in legs
+                        ) if legs else bet.get("player", "")
+                        st.markdown(
+                            f'<div style="font-size:0.82rem;">'
+                            f'<b>{bet["type"]}</b> — {len(legs)}-leg — ${bet["amount"]:.0f} @ {payout_mult:.1f}x'
+                            f'<div style="font-size:0.75rem;color:#94a3b8;margin-top:4px;">{legs_html}</div>'
+                            f'</div>', unsafe_allow_html=True)
+                    with bc2:
+                        if st.button("Won", key=f"qs_won_p_{i}"):
+                            st.session_state["logged_bets"][i]["result"] = "won"
+                            profit = bet["amount"] * (payout_mult - 1)
+                            st.session_state["logged_bets"][i]["profit"] = profit
+                            st.session_state["bankroll_total"] = st.session_state.get("bankroll_total", bankroll) + profit
+                            if _DB_AVAILABLE:
+                                try: save_state_to_db()
+                                except Exception: pass
+                            st.rerun()
+                    with bc3:
+                        if st.button("Lost", key=f"qs_lost_p_{i}"):
+                            st.session_state["logged_bets"][i]["result"] = "lost"
+                            st.session_state["logged_bets"][i]["profit"] = -bet["amount"]
+                            st.session_state["bankroll_total"] = st.session_state.get("bankroll_total", bankroll) - bet["amount"]
+                            if _DB_AVAILABLE:
+                                try: save_state_to_db()
+                                except Exception: pass
+                            st.rerun()
+
+            # ── Settled History ──
+            if settled_logged:
+                st.markdown("---")
+                st.markdown(f"**Settled Bets ({len(settled_logged)})**")
+                settled_data = []
+                for b in settled_logged:
+                    settled_data.append({
+                        "Date": b.get("date", ""),
+                        "Player": b.get("player", "")[:40],
+                        "Stat": b.get("stat", ""),
+                        "Side": b.get("side", ""),
+                        "Type": b.get("type", "Single"),
+                        "Amount": f"${b.get('amount', 0):.0f}",
+                        "Result": b.get("result", "").upper(),
+                        "P&L": f"${b.get('profit', 0):+.2f}",
+                    })
+                st.dataframe(pd.DataFrame(settled_data), use_container_width=True, hide_index=True)
+        else:
+            st.info("No bets logged yet. Go to PrizePicks Lab, run the model, and use 'Log Bet' or 'Log Parlay' to start tracking.")
+
+    # ── CLV TRACKER ──
+    with qs_tabs[3]:
         st.markdown("**Closing Line Value Tracking**")
         st.markdown('<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:10px;">CLV is the #1 predictor of long-term profitability. If you consistently beat the closing line, you have edge. If not, you don\'t.</div>', unsafe_allow_html=True)
 
@@ -5417,7 +5690,7 @@ def tab_quant_system(proj_df: pd.DataFrame, settings: dict):
             st.markdown('<div style="font-size:0.8rem;color:#64748b;margin-top:12px;">No active bets being tracked. Run the PrizePicks Lab model to start CLV tracking.</div>', unsafe_allow_html=True)
 
     # ── EDGE VALIDATION ──
-    with qs_tabs[3]:
+    with qs_tabs[4]:
         st.markdown("**Edge Validation — Do I Actually Have Edge Right Now?**")
         if st.button("Run Edge Validation", key="qs_validate"):
             risk_state = engine.bankroll_mgr.get_risk_state()
@@ -5451,7 +5724,7 @@ def tab_quant_system(proj_df: pd.DataFrame, settings: dict):
             st.json(drift)
 
     # ── RISK & SIZING ──
-    with qs_tabs[4]:
+    with qs_tabs[5]:
         st.markdown("**Risk Management & Dynamic Kelly Sizing**")
         risk_state = engine.bankroll_mgr.get_risk_state()
 
@@ -5495,7 +5768,7 @@ def tab_quant_system(proj_df: pd.DataFrame, settings: dict):
                 st.json(result["adjustments"])
 
     # ── BACKTEST ──
-    with qs_tabs[5]:
+    with qs_tabs[6]:
         st.markdown("**Monte Carlo Bankroll Simulation**")
         st.markdown('<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:10px;">Simulate 10,000 bankroll paths to see probability of ruin, expected growth, and drawdown distribution.</div>', unsafe_allow_html=True)
 
@@ -5547,7 +5820,7 @@ def tab_quant_system(proj_df: pd.DataFrame, settings: dict):
             st.metric("Max Drawdown (95th pct)", f"{mc_result['max_drawdown_p95']*100:.1f}%")
 
     # ── SYSTEM HEALTH (Section 9 — Database-First Architecture) ──
-    with qs_tabs[6]:
+    with qs_tabs[7]:
         st.markdown("**System Health — Database-First Architecture**")
         st.markdown('<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:10px;">Workers run independently of Streamlit. All state persists in the database.</div>', unsafe_allow_html=True)
 
