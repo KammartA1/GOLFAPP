@@ -57,8 +57,8 @@ class H2HMatchup:
 
     def best_side(self) -> tuple[str, float, float]:
         """Return (best_side_player, edge, odds) or None if no edge."""
-        if self.edge_a and self.edge_b:
-            if self.edge_a > self.edge_b and self.edge_a > 0.04:
+        if self.edge_a is not None and self.edge_b is not None:
+            if self.edge_a >= self.edge_b and self.edge_a > 0.04:
                 return (self.player_a, self.edge_a, self.odds_a)
             elif self.edge_b > self.edge_a and self.edge_b > 0.04:
                 return (self.player_b, self.edge_b, self.odds_b)
@@ -92,7 +92,7 @@ class H2HAnalyzer:
         # Scale by sqrt(rounds) — more rounds = more predictive = sharper distribution
         rounds_factor = np.sqrt(n_rounds) / 2
         # Logistic sigmoid: 50% at SG diff = 0, grows with edge
-        win_prob = expit(sg_diff * self.SG_TO_H2H_WIN_SLOPE * rounds_factor * 8)
+        win_prob = expit(sg_diff * self.SG_TO_H2H_WIN_SLOPE * rounds_factor * 2.5)
         return round(float(win_prob), 4)
 
     def analyze_matchup(

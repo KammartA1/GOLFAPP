@@ -34,6 +34,8 @@ class RoundEngine:
         current_position: int = 75,
         strokes_off_lead: float = 0.0,
         field_size: int = 156,
+        wave_adjustment: float = 0.0,
+        prev_form: float | None = None,
     ) -> dict:
         """Simulate one 18-hole round for a player.
 
@@ -49,8 +51,12 @@ class RoundEngine:
                 "doubles_plus": int,
             }
         """
-        # Generate daily form
-        daily_form = self.player_model.generate_daily_form(player)
+        # Generate daily form (with round-to-round correlation if prev_form provided)
+        daily_form = self.player_model.generate_daily_form(
+            player,
+            prev_form=prev_form,
+            round_correlation=self.config.round_to_round_correlation,
+        )
 
         # Weather adjustment
         weather_adj = 0.0
@@ -65,7 +71,7 @@ class RoundEngine:
         )
 
         effective_sg = self.player_model.effective_sg_for_round(
-            player, daily_form, player_weather_adj, 0.0, pressure_adj
+            player, daily_form, player_weather_adj, wave_adjustment, pressure_adj
         )
 
         sg_per_hole = effective_sg / 18.0

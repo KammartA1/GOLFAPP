@@ -227,6 +227,7 @@ class KellyModel:
 
     def settle_bet(self, bet: BetRecommendation, won: bool, book: str = None) -> float:
         """Settle a bet and update bankroll."""
+        self.bets.append(bet)
         decimal_odds = american_to_decimal(bet.odds_american)
         if won:
             profit = bet.capped_stake * (decimal_odds - 1)
@@ -374,7 +375,7 @@ def run_golf_monte_carlo_backtest(
         returns = [b["profit"] / b["stake"] if b["stake"] > 0 else 0 for b in per_bet]
         _mean_r = float(np.mean(returns))
         _std_r = float(np.std(returns)) if len(returns) > 1 else 1.0
-        sharpe = (_mean_r / _std_r * math.sqrt(600)) if _std_r > 0 else 0.0
+        sharpe = (_mean_r / _std_r * math.sqrt(52)) if _std_r > 0 else 0.0
     else:
         sharpe = 0.0
     return {

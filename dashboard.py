@@ -865,13 +865,6 @@ COURSE_PROFILES = {
         "elevation": 650, "par": 70,
         "notes": "Hogan's Alley — precision, small bermuda greens, tight fairways",
     },
-    "TPC Twin Cities": {
-        "sg_weights": {"sg_ott": 0.18, "sg_app": 0.28, "sg_arg": 0.18, "sg_putt": 0.36},
-        "distance_bonus": 0.03, "accuracy_penalty": -0.02,
-        "bermuda_greens": False, "wind_sensitivity": 0.3,
-        "elevation": 850, "par": 71,
-        "notes": "3M Open venue, bentgrass, balanced but birdie-friendly",
-    },
     "St Andrews Old Course": {
         "sg_weights": {"sg_ott": 0.15, "sg_app": 0.25, "sg_arg": 0.25, "sg_putt": 0.35},
         "distance_bonus": 0.02, "accuracy_penalty": -0.02,
@@ -920,13 +913,6 @@ COURSE_PROFILES = {
         "bermuda_greens": True, "wind_sensitivity": 0.45,
         "elevation": 700, "par": 70,
         "notes": "PGA Championship venue, bermuda, Oklahoma wind, premium ball-striking",
-    },
-    "Shinnecock Hills": {
-        "sg_weights": {"sg_ott": 0.17, "sg_app": 0.30, "sg_arg": 0.22, "sg_putt": 0.31},
-        "distance_bonus": 0.02, "accuracy_penalty": -0.05,
-        "bermuda_greens": False, "wind_sensitivity": 0.75,
-        "elevation": 50, "par": 70,
-        "notes": "Links-influenced US Open venue, coastal wind, fescue, firm conditions",
     },
     # ── Additional Tour venues (full season coverage) ────────
     "Waialae CC": {
@@ -2953,7 +2939,9 @@ def pp_combo_ev(pick_probs: list, play_type: str = "power_play") -> dict:
         payout_mult = payouts.get("all_correct", 1.0)
         ev = combo_prob * payout_mult - 1.0  # net EV per $1
 
-        kelly = kelly_fraction_calc(combo_prob, payout_mult, fractional=0.25)
+        _cal = st.session_state.get("calibration", {})
+        kelly_frac = _cal.get("kelly_frac", 0.25)
+        kelly = kelly_fraction_calc(combo_prob, payout_mult, fractional=kelly_frac)
 
         return {
             "ev_per_dollar": round(ev, 4),
@@ -3000,7 +2988,8 @@ def pp_combo_ev(pick_probs: list, play_type: str = "power_play") -> dict:
         # Kelly on the best tier
         best_tier_prob = max((d["prob"] for d in tier_details.values()), default=0)
         best_tier_payout = max((d["payout"] for d in tier_details.values()), default=1)
-        kelly = kelly_fraction_calc(best_tier_prob, best_tier_payout, fractional=0.15)
+        _cal_flex = st.session_state.get("calibration", {})
+        kelly = kelly_fraction_calc(best_tier_prob, best_tier_payout, fractional=_cal_flex.get("kelly_frac", 0.15))
 
         return {
             "ev_per_dollar": round(net_ev, 4),
@@ -3019,6 +3008,105 @@ def pp_combo_ev(pick_probs: list, play_type: str = "power_play") -> dict:
 # ============================================================
 
 
+# ── Player SG baseline data (real-world approximations) ──────
+_PLAYER_SG_BASELINES = {
+    "Scottie Scheffler":   {"sg_ott": 0.75, "sg_app": 1.10, "sg_arg": 0.30, "sg_putt": 0.35, "events": 22},
+    "Rory McIlroy":        {"sg_ott": 0.95, "sg_app": 0.70, "sg_arg": 0.15, "sg_putt": 0.10, "events": 20},
+    "Jon Rahm":            {"sg_ott": 0.55, "sg_app": 0.80, "sg_arg": 0.25, "sg_putt": 0.20, "events": 18},
+    "Xander Schauffele":   {"sg_ott": 0.50, "sg_app": 0.75, "sg_arg": 0.30, "sg_putt": 0.40, "events": 22},
+    "Viktor Hovland":      {"sg_ott": 0.60, "sg_app": 0.90, "sg_arg": -0.10, "sg_putt": 0.00, "events": 21},
+    "Patrick Cantlay":     {"sg_ott": 0.25, "sg_app": 0.70, "sg_arg": 0.25, "sg_putt": 0.50, "events": 20},
+    "Collin Morikawa":     {"sg_ott": 0.20, "sg_app": 0.95, "sg_arg": 0.10, "sg_putt": 0.00, "events": 22},
+    "Ludvig Aberg":        {"sg_ott": 0.70, "sg_app": 0.80, "sg_arg": 0.10, "sg_putt": 0.15, "events": 18},
+    "Wyndham Clark":       {"sg_ott": 0.65, "sg_app": 0.50, "sg_arg": 0.10, "sg_putt": 0.20, "events": 23},
+    "Max Homa":            {"sg_ott": 0.55, "sg_app": 0.45, "sg_arg": 0.20, "sg_putt": 0.10, "events": 22},
+    "Matt Fitzpatrick":    {"sg_ott": -0.10, "sg_app": 0.75, "sg_arg": 0.25, "sg_putt": 0.15, "events": 20},
+    "Sam Burns":           {"sg_ott": 0.50, "sg_app": 0.40, "sg_arg": 0.15, "sg_putt": 0.30, "events": 23},
+    "Tony Finau":          {"sg_ott": 0.60, "sg_app": 0.55, "sg_arg": 0.05, "sg_putt": 0.00, "events": 22},
+    "Sahith Theegala":     {"sg_ott": 0.45, "sg_app": 0.50, "sg_arg": 0.10, "sg_putt": 0.20, "events": 24},
+    "Tommy Fleetwood":     {"sg_ott": 0.40, "sg_app": 0.55, "sg_arg": 0.15, "sg_putt": 0.05, "events": 19},
+    "Shane Lowry":         {"sg_ott": 0.20, "sg_app": 0.50, "sg_arg": 0.30, "sg_putt": 0.10, "events": 20},
+    "Brian Harman":        {"sg_ott": -0.15, "sg_app": 0.45, "sg_arg": 0.40, "sg_putt": 0.35, "events": 23},
+    "Russell Henley":      {"sg_ott": 0.15, "sg_app": 0.55, "sg_arg": 0.20, "sg_putt": 0.20, "events": 24},
+    "Sungjae Im":          {"sg_ott": 0.30, "sg_app": 0.50, "sg_arg": 0.15, "sg_putt": 0.10, "events": 25},
+    "Tom Kim":             {"sg_ott": 0.35, "sg_app": 0.55, "sg_arg": 0.10, "sg_putt": 0.20, "events": 22},
+    "Cameron Young":       {"sg_ott": 0.85, "sg_app": 0.40, "sg_arg": -0.10, "sg_putt": -0.20, "events": 23},
+    "Justin Thomas":       {"sg_ott": 0.55, "sg_app": 0.60, "sg_arg": 0.10, "sg_putt": 0.05, "events": 20},
+    "Jordan Spieth":       {"sg_ott": 0.10, "sg_app": 0.50, "sg_arg": 0.35, "sg_putt": 0.20, "events": 19},
+    "Hideki Matsuyama":    {"sg_ott": 0.35, "sg_app": 0.80, "sg_arg": 0.05, "sg_putt": -0.10, "events": 18},
+    "Corey Conners":       {"sg_ott": 0.30, "sg_app": 0.70, "sg_arg": 0.05, "sg_putt": -0.15, "events": 24},
+    "Cameron Smith":       {"sg_ott": 0.15, "sg_app": 0.30, "sg_arg": 0.50, "sg_putt": 0.55, "events": 16},
+    "Dustin Johnson":      {"sg_ott": 0.80, "sg_app": 0.35, "sg_arg": 0.00, "sg_putt": -0.10, "events": 14},
+    "Brooks Koepka":       {"sg_ott": 0.65, "sg_app": 0.45, "sg_arg": 0.05, "sg_putt": -0.05, "events": 16},
+    "Will Zalatoris":      {"sg_ott": 0.40, "sg_app": 0.85, "sg_arg": -0.05, "sg_putt": -0.15, "events": 15},
+    "Keegan Bradley":      {"sg_ott": 0.35, "sg_app": 0.40, "sg_arg": 0.15, "sg_putt": 0.10, "events": 24},
+    "Tyrrell Hatton":      {"sg_ott": 0.30, "sg_app": 0.55, "sg_arg": 0.20, "sg_putt": 0.10, "events": 19},
+    "Robert MacIntyre":    {"sg_ott": 0.40, "sg_app": 0.45, "sg_arg": 0.15, "sg_putt": 0.10, "events": 20},
+    "Akshay Bhatia":       {"sg_ott": 0.55, "sg_app": 0.50, "sg_arg": 0.05, "sg_putt": 0.10, "events": 23},
+    "Billy Horschel":      {"sg_ott": 0.20, "sg_app": 0.40, "sg_arg": 0.20, "sg_putt": 0.15, "events": 24},
+    "Chris Kirk":          {"sg_ott": 0.15, "sg_app": 0.35, "sg_arg": 0.25, "sg_putt": 0.25, "events": 25},
+    "Denny McCarthy":      {"sg_ott": -0.20, "sg_app": 0.20, "sg_arg": 0.25, "sg_putt": 0.65, "events": 25},
+    "Jason Day":           {"sg_ott": 0.40, "sg_app": 0.30, "sg_arg": 0.20, "sg_putt": 0.15, "events": 22},
+    "Si Woo Kim":          {"sg_ott": 0.30, "sg_app": 0.40, "sg_arg": 0.10, "sg_putt": 0.05, "events": 24},
+    "Taylor Moore":        {"sg_ott": 0.35, "sg_app": 0.30, "sg_arg": 0.10, "sg_putt": 0.05, "events": 26},
+    "Byeong Hun An":       {"sg_ott": 0.25, "sg_app": 0.35, "sg_arg": 0.15, "sg_putt": 0.05, "events": 22},
+    "Davis Riley":         {"sg_ott": 0.30, "sg_app": 0.40, "sg_arg": 0.05, "sg_putt": 0.10, "events": 24},
+    "Sepp Straka":         {"sg_ott": 0.35, "sg_app": 0.45, "sg_arg": 0.10, "sg_putt": 0.00, "events": 23},
+    "Aaron Rai":           {"sg_ott": 0.15, "sg_app": 0.50, "sg_arg": 0.20, "sg_putt": 0.10, "events": 22},
+    "Taylor Pendrith":     {"sg_ott": 0.65, "sg_app": 0.25, "sg_arg": 0.00, "sg_putt": -0.05, "events": 24},
+    "Nick Dunlap":         {"sg_ott": 0.50, "sg_app": 0.35, "sg_arg": 0.10, "sg_putt": 0.05, "events": 20},
+    "Maverick McNealy":    {"sg_ott": 0.25, "sg_app": 0.30, "sg_arg": 0.15, "sg_putt": 0.15, "events": 23},
+    "Adam Hadwin":         {"sg_ott": 0.10, "sg_app": 0.35, "sg_arg": 0.20, "sg_putt": 0.20, "events": 24},
+    "Eric Cole":           {"sg_ott": 0.50, "sg_app": 0.40, "sg_arg": 0.00, "sg_putt": -0.05, "events": 25},
+    "Stephan Jaeger":      {"sg_ott": 0.20, "sg_app": 0.45, "sg_arg": 0.10, "sg_putt": 0.10, "events": 26},
+    "Min Woo Lee":         {"sg_ott": 0.55, "sg_app": 0.35, "sg_arg": 0.05, "sg_putt": -0.05, "events": 19},
+    "Lucas Glover":        {"sg_ott": 0.15, "sg_app": 0.45, "sg_arg": 0.15, "sg_putt": 0.10, "events": 24},
+    "Austin Eckroat":      {"sg_ott": 0.40, "sg_app": 0.30, "sg_arg": 0.10, "sg_putt": 0.05, "events": 25},
+    "Christiaan Bezuidenhout": {"sg_ott": 0.20, "sg_app": 0.40, "sg_arg": 0.15, "sg_putt": 0.10, "events": 20},
+    "Harris English":      {"sg_ott": 0.25, "sg_app": 0.35, "sg_arg": 0.15, "sg_putt": 0.10, "events": 22},
+    "Adam Scott":          {"sg_ott": 0.30, "sg_app": 0.40, "sg_arg": 0.10, "sg_putt": 0.00, "events": 17},
+    "Rickie Fowler":       {"sg_ott": 0.25, "sg_app": 0.25, "sg_arg": 0.10, "sg_putt": 0.05, "events": 20},
+    "Kevin Yu":            {"sg_ott": 0.35, "sg_app": 0.35, "sg_arg": 0.05, "sg_putt": 0.00, "events": 24},
+    "J.T. Poston":         {"sg_ott": 0.10, "sg_app": 0.30, "sg_arg": 0.20, "sg_putt": 0.25, "events": 26},
+    "Tiger Woods":         {"sg_ott": 0.30, "sg_app": 0.40, "sg_arg": 0.20, "sg_putt": 0.10, "events": 5},
+    "Phil Mickelson":      {"sg_ott": 0.10, "sg_app": 0.15, "sg_arg": 0.25, "sg_putt": -0.05, "events": 10},
+}
+
+_PLAYER_SG_INDEX = {k.lower(): v for k, v in _PLAYER_SG_BASELINES.items()}
+
+
+def _lookup_player_sg(name: str) -> dict | None:
+    """Look up baseline SG data for a player by name."""
+    key = name.strip().lower()
+    if key in _PLAYER_SG_INDEX:
+        return _PLAYER_SG_INDEX[key]
+    last = key.split()[-1] if key else ""
+    for pname, data in _PLAYER_SG_INDEX.items():
+        if last and pname.endswith(last) and len(last) > 3:
+            return data
+    return None
+
+
+def _estimate_sg_from_odds_rank(rank_idx: int, field_size: int, odds: int = 0) -> tuple:
+    """Estimate SG components from field position or odds when no baseline available.
+
+    Returns (sg_ott, sg_app, sg_arg, sg_putt, events).
+    """
+    if odds and odds > 0:
+        implied = 100.0 / (odds + 100)
+        est_total = max(-0.5, min(2.0, (implied - 0.01) * 25))
+    else:
+        frac = 1.0 - (rank_idx / max(1, field_size - 1))
+        est_total = 1.5 * frac - 0.3
+
+    sg_ott = round(est_total * 0.25, 2)
+    sg_app = round(est_total * 0.35, 2)
+    sg_arg = round(est_total * 0.18, 2)
+    sg_putt = round(est_total * 0.22, 2)
+    events = 20
+    return sg_ott, sg_app, sg_arg, sg_putt, events
+
+
 # ── Sample data generator for demo mode ─────────────────────
 def _generate_sample_players(n: int = 30, course: str = "Augusta National") -> pd.DataFrame:
     """Generate realistic sample player data for demo/testing."""
@@ -3032,16 +3120,15 @@ def _generate_sample_players(n: int = 30, course: str = "Augusta National") -> p
         "Corey Conners", "Cameron Smith", "Dustin Johnson", "Brooks Koepka",
         "Will Zalatoris", "Keegan Bradley",
     ][:n]
-    rng = np.random.RandomState(42)
     rows = []
     for i, name in enumerate(names):
-        base = 1.5 - i * 0.08 + rng.normal(0, 0.3)
-        sg_ott = round(rng.normal(0.4, 0.6), 2)
-        sg_app = round(rng.normal(0.3, 0.7), 2)
-        sg_arg = round(rng.normal(0.1, 0.5), 2)
-        sg_putt = round(rng.normal(0.2, 0.8), 2)
+        sg_data = _lookup_player_sg(name)
+        if sg_data:
+            sg_ott, sg_app, sg_arg, sg_putt = sg_data["sg_ott"], sg_data["sg_app"], sg_data["sg_arg"], sg_data["sg_putt"]
+            events = sg_data.get("events", 20)
+        else:
+            sg_ott, sg_app, sg_arg, sg_putt, events = _estimate_sg_from_odds_rank(i, n)
         sg_total = round(sg_ott + sg_app + sg_arg + sg_putt, 2)
-        events = rng.randint(8, 28)
         rows.append({
             "player": name,
             "sg_total": sg_total,
@@ -3050,7 +3137,7 @@ def _generate_sample_players(n: int = 30, course: str = "Augusta National") -> p
             "sg_arg": sg_arg,
             "sg_putt": sg_putt,
             "events": events,
-            "odds": int(rng.choice([600, 800, 1000, 1200, 1500, 2000, 2500, 3000, 4000, 5000, 6000, 8000, 10000])),
+            "odds": [600, 800, 1000, 1200, 1500, 2000, 2500, 3000, 4000, 5000, 6000, 8000, 10000][min(i, 12)],
             "world_rank": i + 1,
         })
     return pd.DataFrame(rows)
@@ -3085,7 +3172,7 @@ def _enrich_player_row(row: dict, course: str) -> dict:
     return row
 
 
-def _build_projection_table(df: pd.DataFrame, course: str) -> pd.DataFrame:
+def _build_projection_table(df: pd.DataFrame, course: str, n_sims: int = 5000) -> pd.DataFrame:
     """Build full projection table with all computed columns."""
     enriched = [_enrich_player_row(row.to_dict(), course) for _, row in df.iterrows()]
     proj_df = pd.DataFrame(enriched)
@@ -3094,14 +3181,16 @@ def _build_projection_table(df: pd.DataFrame, course: str) -> pd.DataFrame:
     field_sg = proj_df["sg_regressed"].tolist()
     win_probs, t5_probs, t10_probs, t20_probs, cut_probs = [], [], [], [], []
 
+    top_n_sims = max(1000, n_sims * 3 // 5)
+
     for idx, r in proj_df.iterrows():
         # Exclude player from field to avoid self-competition bias
         field_without_self = [sg for i, sg in enumerate(field_sg) if i != idx]
-        wp = monte_carlo_win_prob(r["sg_regressed"], field_without_self, n_sims=5000)
+        wp = monte_carlo_win_prob(r["sg_regressed"], field_without_self, n_sims=n_sims)
         win_probs.append(wp["win_prob"])
-        t5_probs.append(sg_to_top_n_prob(r["sg_regressed"], field_without_self, 5, n_sims=3000))
-        t10_probs.append(sg_to_top_n_prob(r["sg_regressed"], field_without_self, 10, n_sims=3000))
-        t20_probs.append(sg_to_top_n_prob(r["sg_regressed"], field_without_self, 20, n_sims=3000))
+        t5_probs.append(sg_to_top_n_prob(r["sg_regressed"], field_without_self, 5, n_sims=top_n_sims))
+        t10_probs.append(sg_to_top_n_prob(r["sg_regressed"], field_without_self, 10, n_sims=top_n_sims))
+        t20_probs.append(sg_to_top_n_prob(r["sg_regressed"], field_without_self, 20, n_sims=top_n_sims))
         cut_probs.append(sg_to_make_cut_prob(r["sg_regressed"]))
 
     proj_df["win_prob"] = win_probs
@@ -3330,9 +3419,9 @@ TOURNAMENT_TO_COURSE = {
     "The Masters": "Augusta National",
     "Masters Tournament": "Augusta National",
     "RBC Heritage": "Harbour Town",
-    "PGA Championship": "Quail Hollow",
-    "U.S. Open": "Oakmont CC",
-    "The Open Championship": "St Andrews",
+    "PGA Championship": "Aronimink GC",
+    "U.S. Open": "Shinnecock Hills",
+    "The Open Championship": "Royal Birkdale",
     "Farmers Insurance Open": "Torrey Pines South",
     "WM Phoenix Open": "TPC Scottsdale",
     "Genesis Invitational": "Riviera CC",
@@ -3348,7 +3437,7 @@ TOURNAMENT_TO_COURSE = {
     "Travelers Championship": "TPC River Highlands",
     "Wyndham Championship": "Sedgefield CC",
     "FedEx St. Jude Championship": "TPC Southwind",
-    "BMW Championship": "Castle Pines",
+    "BMW Championship": "Bellerive CC",
     "TOUR Championship": "East Lake",
     "Cognizant Classic": "PGA National",
     "Texas Children's Houston Open": "Memorial Park GC",
@@ -3586,11 +3675,15 @@ def render_sidebar() -> dict:
 
         # Simulation settings
         st.markdown("**Simulation Settings**")
-        n_sims = st.slider("Monte Carlo Sims", 1000, 20000, 5000, 1000,
+        _cal = st.session_state.get("calibration", {})
+        n_sims = st.slider("Monte Carlo Sims", 1000, 20000, _cal.get("mc_sims", 5000), 1000,
                            help="More sims = more accurate probabilities, but slower")
-        bankroll = st.number_input("Bankroll ($)", 100, 100000, 1000, 100,
+        _br_default = int(st.session_state.get("bankroll_total", 1000))
+        bankroll = st.number_input("Bankroll ($)", 100, 100000, _br_default, 100,
                                    help="Your total betting bankroll — Kelly sizing is based on this")
-        kelly_mult = st.slider("Kelly Fraction", 0.1, 1.0, 0.25, 0.05,
+        if bankroll != st.session_state.get("bankroll_total"):
+            st.session_state["bankroll_total"] = bankroll
+        kelly_mult = st.slider("Kelly Fraction", 0.1, 1.0, _cal.get("kelly_frac", 0.25), 0.05,
                                help="0.25 = quarter Kelly (conservative). Higher = more aggressive sizing")
 
         st.markdown("---")
@@ -5631,7 +5724,7 @@ def tab_quant_system(proj_df: pd.DataFrame, settings: dict):
                 clv_delta = closing - bet["line"]
                 clv_tag = ""
                 if clv_delta != 0:
-                    favorable = (clv_delta < 0 and bet["direction"] == "under") or (clv_delta > 0 and bet["direction"] == "over")
+                    favorable = (clv_delta < 0 and bet["direction"] == "over") or (clv_delta > 0 and bet["direction"] == "under")
                     clv_color = "#00FF88" if favorable else "#FF3358"
                     clv_tag = f' <span style="color:{clv_color};font-size:0.75rem;">(CLV: {clv_delta:+.1f})</span>'
 
@@ -5710,7 +5803,7 @@ def tab_quant_system(proj_df: pd.DataFrame, settings: dict):
                     with bc3:
                         if st.button("Won", key=f"qs_won_s_{i}"):
                             st.session_state["logged_bets"][i]["result"] = "won"
-                            payout = 1.909
+                            payout = bet.get("payout_mult", 1.909)
                             st.session_state["logged_bets"][i]["profit"] = bet["amount"] * (payout - 1)
                             st.session_state["bankroll_total"] = st.session_state.get("bankroll_total", bankroll) + st.session_state["logged_bets"][i]["profit"]
                             if _DB_AVAILABLE:
@@ -6289,8 +6382,9 @@ def tab_settings(proj_df: pd.DataFrame, settings: dict):
                             st.write(f"{bet['player']} {bet['stat']} {bet['side']} {bet['line']} — ${bet['amount']}")
                         with bcol2:
                             if st.button("Won", key=f"won_{i}"):
-                                payout_map = {"Power Play": 3.0, "Flex Play": 2.25, "Single": 1.909}
-                                payout = payout_map.get(bet["type"], 1.909)
+                                payout_map = {"Power Play": {2: 3.0, 3: 5.0, 4: 10.0, 5: 20.0, 6: 40.0}, "Flex Play": {3: 2.25, 4: 5.0, 5: 10.0, 6: 25.0}, "Single": {1: 1.909}}
+                                n_legs = len(bet.get("legs", []))  or 1
+                                payout = bet.get("payout_mult", payout_map.get(bet.get("type", "Single"), {}).get(n_legs, 1.909))
                                 profit = bet["amount"] * (payout - 1)
                                 st.session_state["logged_bets"][i]["result"] = "won"
                                 st.session_state["logged_bets"][i]["profit"] = profit
@@ -7047,33 +7141,29 @@ def main():
             espn_players = espn_data["players"]
             st.success(f"**{event_name}** — {len(espn_players)} players ({event_status})")
 
-            # Build raw_df from ESPN field + odds overlay
-            rng = np.random.RandomState(42)
             rows = []
             n = len(espn_players)
+            matched_count = 0
             for i, pl in enumerate(espn_players):
                 name = pl["name"]
-                # Scale SG by leaderboard position (if available) or field order
-                frac = 1.0 - (i / max(1, n - 1))
-                base_sg = 2.0 * frac - 0.2
-                sg_ott = round(rng.normal(0.3, 0.4) + max(0, base_sg * 0.18), 2)
-                sg_app = round(rng.normal(0.2, 0.5) + max(0, base_sg * 0.30), 2)
-                sg_arg = round(rng.normal(0.1, 0.3) + max(0, base_sg * 0.15), 2)
-                sg_putt = round(rng.normal(0.15, 0.5) + max(0, base_sg * 0.20), 2)
+                sg_data = _lookup_player_sg(name)
+                if sg_data:
+                    matched_count += 1
+                    sg_ott, sg_app, sg_arg, sg_putt = sg_data["sg_ott"], sg_data["sg_app"], sg_data["sg_arg"], sg_data["sg_putt"]
+                    events = sg_data.get("events", 20)
+                else:
+                    sg_ott, sg_app, sg_arg, sg_putt, events = _estimate_sg_from_odds_rank(i, n, odds_map.get(name, 0))
                 sg_total = round(sg_ott + sg_app + sg_arg + sg_putt, 2)
 
-                # Look up odds for this player (fuzzy match)
                 player_odds = odds_map.get(name, 0)
                 if not player_odds:
-                    # Try last-name match
                     last_name = name.split()[-1] if name else ""
                     for oname, oprice in odds_map.items():
                         if last_name and last_name in oname:
                             player_odds = oprice
                             break
                 if not player_odds:
-                    # Estimate from rank position
-                    player_odds = int(500 + i * 300 + rng.randint(0, 500))
+                    player_odds = int(500 + i * 300)
 
                 rows.append({
                     "player": name,
@@ -7082,11 +7172,15 @@ def main():
                     "sg_app": sg_app,
                     "sg_arg": sg_arg,
                     "sg_putt": sg_putt,
-                    "events": rng.randint(10, 25),
+                    "events": events,
                     "odds": player_odds,
                     "world_rank": i + 1,
                 })
             raw_df = pd.DataFrame(rows)
+            if matched_count < n:
+                st.warning(f"SG data: {matched_count}/{n} players matched to baseline stats. "
+                           f"Remaining {n - matched_count} use odds-implied estimates. "
+                           f"Upload CSV with real SG data for best accuracy.")
         else:
             st.warning("Could not fetch ESPN field. Falling back to demo data.")
             raw_df = _generate_sample_players(30, settings["course"])
@@ -7110,7 +7204,7 @@ def main():
 
     if "proj_cache_key" not in st.session_state or st.session_state["proj_cache_key"] != cache_key:
         with st.spinner("Computing projections..."):
-            proj_df = _build_projection_table(raw_df, settings["course"])
+            proj_df = _build_projection_table(raw_df, settings["course"], n_sims=settings.get("n_sims", 5000))
             st.session_state["proj_df"] = proj_df
             st.session_state["proj_cache_key"] = cache_key
     else:

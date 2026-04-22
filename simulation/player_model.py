@@ -34,6 +34,7 @@ class SimPlayer:
     rain_sg_diff: float = 0.0
     # Pressure
     pressure_coefficient: float = 0.0  # Positive = chokes, negative = thrives
+    closer_index: float = 0.0  # Positive = thrives under Sunday pressure, negative = chokes
 
     @property
     def sg_per_hole(self) -> float:
@@ -55,10 +56,16 @@ class PlayerModel:
     def __init__(self, rng: np.random.Generator):
         self.rng = rng
 
-    def generate_daily_form(self, player: SimPlayer) -> float:
+    def generate_daily_form(
+        self,
+        player: SimPlayer,
+        prev_form: float | None = None,
+        round_correlation: float = 0.0,
+    ) -> float:
         """Generate a random daily form factor for one round.
 
         Models day-to-day variation in player performance.
+        When prev_form is provided, carries over round-to-round correlation.
         Returns SG adjustment for this specific day.
         """
         # Daily form is normally distributed around 0 with player-specific std
@@ -66,6 +73,10 @@ class PlayerModel:
 
         # Apply volatility multiplier
         daily_noise *= player.volatility_multiplier
+
+        # Round-to-round correlation (C8): carry over portion of previous form
+        if prev_form is not None and round_correlation > 0:
+            daily_noise += round_correlation * prev_form
 
         return float(daily_noise)
 

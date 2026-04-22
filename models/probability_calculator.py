@@ -52,57 +52,50 @@ STAT_BASELINES = {
 }
 
 # SG → stat sensitivity coefficients
+# v9.0: Use ONLY component sensitivities (NOT sg_total + components, which double-counts)
+# sg_total = sg_ott + sg_app + sg_atg + sg_putt, so using both is double-counting
 SG_STAT_SENSITIVITY = {
     "fantasy_score": {
-        "sg_total": 9.5, "sg_app": 3.0, "sg_putt": 2.5,
-        "sg_ott": 1.5, "sg_atg": 2.0,
+        "sg_app": 3.8, "sg_putt": 2.8, "sg_ott": 1.6, "sg_atg": 1.3,
     },
     "birdies": {
-        "sg_total": 0.85, "sg_app": 0.5, "sg_putt": 0.4,
-        "sg_ott": 0.1, "sg_atg": 0.15,
+        "sg_app": 0.40, "sg_putt": 0.30, "sg_ott": 0.10, "sg_atg": 0.05,
     },
     "bogey_free_holes": {
-        "sg_total": 0.8, "sg_app": 0.4, "sg_putt": 0.3,
-        "sg_ott": 0.2, "sg_atg": 0.25,
+        "sg_app": 0.35, "sg_putt": 0.25, "sg_ott": 0.10, "sg_atg": 0.10,
     },
     "pars_or_better": {
-        "sg_total": 0.7, "sg_app": 0.35, "sg_putt": 0.25,
-        "sg_ott": 0.15, "sg_atg": 0.2,
+        "sg_app": 0.30, "sg_putt": 0.20, "sg_ott": 0.10, "sg_atg": 0.10,
     },
     "strokes_total": {
-        "sg_total": -4.0, "sg_app": -1.5, "sg_putt": -1.2,
-        "sg_ott": -0.8, "sg_atg": -0.5,
+        "sg_app": -1.5, "sg_putt": -1.0, "sg_ott": -0.8, "sg_atg": -0.7,
     },
     "holes_under_par": {
-        "sg_total": 3.5, "sg_app": 2.0, "sg_putt": 1.5,
-        "sg_ott": 0.5, "sg_atg": 0.5,
+        "sg_app": 1.5, "sg_putt": 1.0, "sg_ott": 0.5, "sg_atg": 0.5,
     },
     "gir": {
-        "sg_app": 1.2, "sg_ott": 0.3, "sg_total": 0.5,
+        "sg_app": 1.5, "sg_ott": 0.5,
     },
     "fairways_hit": {
-        "sg_ott": 1.5, "sg_total": 0.3,
+        "sg_ott": 1.8,
     },
     "eagles": {
-        "sg_total": 0.15, "sg_ott": 0.1, "sg_app": 0.08,
+        "sg_ott": 0.10, "sg_app": 0.08,
     },
     "longest_drive": {
         "sg_ott": 5.0,
     },
-    # Aliases
     "birdies_or_better": {
-        "sg_total": 0.85, "sg_app": 0.5, "sg_putt": 0.4,
-        "sg_ott": 0.1, "sg_atg": 0.15,
+        "sg_app": 0.40, "sg_putt": 0.30, "sg_ott": 0.10, "sg_atg": 0.05,
     },
     "greens_in_regulation": {
-        "sg_app": 1.2, "sg_ott": 0.3, "sg_total": 0.5,
+        "sg_app": 1.5, "sg_ott": 0.5,
     },
     "pars": {
-        "sg_total": 0.6, "sg_app": 0.3, "sg_putt": 0.2,
-        "sg_ott": 0.15, "sg_atg": 0.2,
+        "sg_app": 0.25, "sg_putt": 0.15, "sg_ott": 0.10, "sg_atg": 0.10,
     },
     "birdies_or_better_matchup": {
-        "sg_total": 0.85, "sg_app": 0.5, "sg_putt": 0.4,
+        "sg_app": 0.40, "sg_putt": 0.30, "sg_ott": 0.10,
     },
 }
 
@@ -198,8 +191,8 @@ def calc_probability(projection: float, std: float, line: float) -> dict:
     prob_over = 1 - stats.norm.cdf(z)
     prob_under = stats.norm.cdf(z)
 
-    # Edge = P(side) - breakeven (PrizePicks is ~53.5% breakeven at -115)
-    breakeven = 0.535
+    # PrizePicks breakeven varies: 2-pick power play ~57.7%, standard ~53.1%
+    breakeven = 0.531
     edge_over = prob_over - breakeven
     edge_under = prob_under - breakeven
 
@@ -240,7 +233,7 @@ def classify_confidence(edge: float, market_alignment: bool = None,
 
 
 def kelly_stake(prob: float, odds_decimal: float = 1.87,
-                kelly_fraction: float = 0.25, bankroll: float = 1000) -> dict:
+                kelly_fraction: float = 0.20, bankroll: float = 1000) -> dict:
     """
     Calculate Kelly criterion bet size.
 
