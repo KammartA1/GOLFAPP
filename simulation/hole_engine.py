@@ -46,7 +46,7 @@ class HoleEngine:
         """
         # Effective player skill for this hole
         effective_sg = player_sg_per_hole - hole_difficulty - weather_adjustment - pressure_adjustment
-        effective_sg += momentum * self.config.hole_to_hole_correlation
+        effective_sg += momentum * self.config.momentum_carry
 
         # Convert SG to outcome probabilities
         probs = self._sg_to_probabilities(hole_par, effective_sg, player_volatility)
@@ -96,16 +96,16 @@ class HoleEngine:
 
         # Adjust for player skill (SG)
         # Positive SG -> more birdies/eagles, fewer bogeys
-        skill_shift = effective_sg * 18.0  # Scale to per-hole impact
+        skill_shift = effective_sg  # Already per-hole SG
 
         adjusted = {}
         # Birdie/eagle probability increases with skill
-        adjusted[-2] = base[-2] * np.exp(skill_shift * 0.8)
-        adjusted[-1] = base[-1] * np.exp(skill_shift * 0.5)
+        adjusted[-2] = base[-2] * np.exp(skill_shift * 8.0)
+        adjusted[-1] = base[-1] * np.exp(skill_shift * 5.0)
         adjusted[0] = base[0]
         # Bogey/double probability decreases with skill
-        adjusted[1] = base[1] * np.exp(-skill_shift * 0.4)
-        adjusted[2] = base[2] * np.exp(-skill_shift * 0.6)
+        adjusted[1] = base[1] * np.exp(-skill_shift * 4.0)
+        adjusted[2] = base[2] * np.exp(-skill_shift * 6.0)
 
         # Volatility adjustment: high-volatility players have more extreme outcomes
         if volatility != 1.0:

@@ -68,16 +68,136 @@ COURSE_PROFILES = {
         "notes": "Players Championship — precision over power. 17th island green is high-variance. Bermuda greens. Wind swings from Atlantic."
     },
 
-    "Augusta National GC": {
-        "sg_weights": {"sg_ott": 0.20, "sg_app": 0.42, "sg_atg": 0.22, "sg_putt": 0.16},
-        "distance_bonus": 0.65,
-        "accuracy_penalty": 0.30,
+    "Valhalla GC": {
+        "sg_weights": {"sg_ott": 0.24, "sg_app": 0.36, "sg_atg": 0.18, "sg_putt": 0.22},
+        "distance_bonus": 0.70,
+        "accuracy_penalty": 0.35,
+        "bermuda_greens": False,
+        "elevation_ft": 750,
+        "typical_conditions": "parkland",
+        "wind_sensitivity": 0.35,
+        "key_skills": ["driving_distance", "approach_accuracy", "bentgrass_putting"],
+        "notes": "PGA Championship host — long, wide layout rewards power. Reachable par-5s separate the field."
+    },
+
+    "Bethpage Black": {
+        "sg_weights": {"sg_ott": 0.22, "sg_app": 0.38, "sg_atg": 0.22, "sg_putt": 0.18},
+        "distance_bonus": 0.55,
+        "accuracy_penalty": 0.70,
+        "bermuda_greens": False,
+        "elevation_ft": 100,
+        "typical_conditions": "parkland",
+        "wind_sensitivity": 0.40,
+        "key_skills": ["length", "rough_play", "accurate_irons", "scrambling"],
+        "notes": "Brutal rough, long carries, demanding par-4s. Complete ball-striking test."
+    },
+
+    "Oakmont CC": {
+        "sg_weights": {"sg_ott": 0.18, "sg_app": 0.35, "sg_atg": 0.27, "sg_putt": 0.20},
+        "distance_bonus": 0.35,
+        "accuracy_penalty": 0.75,
+        "bermuda_greens": False,
+        "elevation_ft": 1100,
+        "typical_conditions": "parkland",
+        "wind_sensitivity": 0.35,
+        "key_skills": ["church_pew_bunkers", "approach_accuracy", "scrambling", "speed_management"],
+        "notes": "U.S. Open host — fastest greens in championship golf, 200+ bunkers, extreme precision required."
+    },
+
+    "Winged Foot GC": {
+        "sg_weights": {"sg_ott": 0.18, "sg_app": 0.38, "sg_atg": 0.24, "sg_putt": 0.20},
+        "distance_bonus": 0.40,
+        "accuracy_penalty": 0.70,
+        "bermuda_greens": False,
+        "elevation_ft": 300,
+        "typical_conditions": "parkland",
+        "wind_sensitivity": 0.30,
+        "key_skills": ["approach_accuracy", "scrambling", "patience"],
+        "notes": "U.S. Open host — narrow fairways, thick rough, elevated greens. Favors patient, accurate ball-strikers."
+    },
+
+    "Quail Hollow": {
+        "sg_weights": {"sg_ott": 0.22, "sg_app": 0.38, "sg_atg": 0.20, "sg_putt": 0.20},
+        "distance_bonus": 0.55,
+        "accuracy_penalty": 0.50,
         "bermuda_greens": True,
-        "elevation_ft": 330,
+        "elevation_ft": 700,
+        "typical_conditions": "parkland",
+        "wind_sensitivity": 0.35,
+        "key_skills": ["driving_distance", "approach_precision", "bermuda_putting"],
+        "notes": "Wells Fargo / PGA Championship host — Green Mile finish is iconic. Distance matters, bermuda greens."
+    },
+
+    "Colonial CC": {
+        "sg_weights": {"sg_ott": 0.14, "sg_app": 0.40, "sg_atg": 0.26, "sg_putt": 0.20},
+        "distance_bonus": 0.20,
+        "accuracy_penalty": 0.75,
+        "bermuda_greens": True,
+        "elevation_ft": 600,
         "typical_conditions": "parkland",
         "wind_sensitivity": 0.45,
-        "key_skills": ["distance", "precise_irons", "bermuda_putting"],
-        "notes": "The Masters — duplicate of Augusta National profile."
+        "key_skills": ["accuracy", "iron_play", "scrambling", "patience"],
+        "notes": "Charles Schwab Challenge — Hogan's Alley. Tight, tree-lined, accuracy paramount. Short hitters can win."
+    },
+
+    "TPC River Highlands": {
+        "sg_weights": {"sg_ott": 0.20, "sg_app": 0.36, "sg_atg": 0.22, "sg_putt": 0.22},
+        "distance_bonus": 0.55,
+        "accuracy_penalty": 0.40,
+        "bermuda_greens": False,
+        "elevation_ft": 50,
+        "typical_conditions": "parkland",
+        "wind_sensitivity": 0.35,
+        "key_skills": ["birdie_making", "putting", "par5_scoring"],
+        "notes": "Travelers Championship — short course, birdie-fest. Putting and par-5 scoring separate the field."
+    },
+
+    "Sedgefield CC": {
+        "sg_weights": {"sg_ott": 0.16, "sg_app": 0.38, "sg_atg": 0.24, "sg_putt": 0.22},
+        "distance_bonus": 0.25,
+        "accuracy_penalty": 0.65,
+        "bermuda_greens": True,
+        "elevation_ft": 800,
+        "typical_conditions": "parkland",
+        "wind_sensitivity": 0.30,
+        "key_skills": ["accuracy", "approach_precision", "bermuda_putting"],
+        "notes": "Wyndham Championship — short, tight. Accuracy > distance. Bermuda greens favor local knowledge."
+    },
+
+    "Detroit Golf Club": {
+        "sg_weights": {"sg_ott": 0.22, "sg_app": 0.34, "sg_atg": 0.22, "sg_putt": 0.22},
+        "distance_bonus": 0.55,
+        "accuracy_penalty": 0.40,
+        "bermuda_greens": False,
+        "elevation_ft": 600,
+        "typical_conditions": "parkland",
+        "wind_sensitivity": 0.30,
+        "key_skills": ["driving_distance", "birdie_making", "bentgrass_putting"],
+        "notes": "Rocket Mortgage Classic — birdie-fest, wide fairways. Distance creates par-5 eagle chances."
+    },
+
+    "Kapalua Plantation": {
+        "sg_weights": {"sg_ott": 0.28, "sg_app": 0.32, "sg_atg": 0.18, "sg_putt": 0.22},
+        "distance_bonus": 0.85,
+        "accuracy_penalty": 0.20,
+        "bermuda_greens": True,
+        "elevation_ft": 300,
+        "typical_conditions": "coastal_tropical",
+        "wind_sensitivity": 0.80,
+        "key_skills": ["driving_distance", "wind_management", "bermuda_putting"],
+        "notes": "The Sentry — massive fairways, bombers paradise. Wind from trade winds is constant. Wide open favors power."
+    },
+
+    "TPC Southwind": {
+        "sg_weights": {"sg_ott": 0.18, "sg_app": 0.38, "sg_atg": 0.24, "sg_putt": 0.20},
+        "distance_bonus": 0.35,
+        "accuracy_penalty": 0.65,
+        "bermuda_greens": True,
+        "elevation_ft": 300,
+        "typical_conditions": "parkland",
+        "wind_sensitivity": 0.35,
+        "key_skills": ["accuracy", "approach_precision", "scrambling", "bermuda_putting"],
+        "notes": "FedEx St. Jude Championship — tight, demanding. Water on many holes. Accuracy and ATG critical."
     },
 
     "Muirfield Village": {
@@ -288,6 +408,19 @@ COURSE_ALIASES = {
     "Royal Birkdale Golf Club": "Royal Birkdale",
     "TPC Toronto at Osprey Valley": "TPC Toronto",
     "Bellerive Country Club": "Bellerive CC",
+    "Augusta National GC": "Augusta National",
+    "Augusta National Golf Course": "Augusta National",
+    "Valhalla Golf Club": "Valhalla GC",
+    "Bethpage State Park (Black Course)": "Bethpage Black",
+    "Oakmont Country Club": "Oakmont CC",
+    "Winged Foot Golf Club": "Winged Foot GC",
+    "Quail Hollow Club": "Quail Hollow",
+    "Colonial Country Club": "Colonial CC",
+    "TPC River Highlands": "TPC River Highlands",
+    "Sedgefield Country Club": "Sedgefield CC",
+    "Detroit Golf Club": "Detroit Golf Club",
+    "Kapalua Resort (Plantation Course)": "Kapalua Plantation",
+    "TPC Southwind": "TPC Southwind",
 }
 
 # ─────────────────────────────────────────────────────────────────

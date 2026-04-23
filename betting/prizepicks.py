@@ -431,8 +431,28 @@ class PrizePicksAnalyzer:
             # Apply conservative correlation penalty: 3% per additional leg
             probs = [e.pick_prob for e in combo]
             combined_prob = float(np.prod(probs))
-            # Correlation dampening: same-tournament picks are NOT independent
-            _corr_penalty = 0.97 ** max(0, len(probs) - 1)
+            # R5: Anti-correlation intelligence
+            # Compute correlation penalty based on stat types and player overlap
+            stat_types = [e.projection.stat_type for e in combo]
+            players = [e.projection.player_name for e in combo]
+
+            # Different stat types are less correlated
+            unique_stats = len(set(stat_types))
+            stat_diversity = unique_stats / len(stat_types)
+
+            # Same-player different-stat picks are highly correlated
+            unique_players = len(set(players))
+            player_diversity = unique_players / len(players)
+
+            # Mixed over/under reduces correlation
+            directions = [e.recommendation for e in combo]
+            has_both_directions = len(set(directions)) > 1
+
+            # Correlation penalty: less penalty for diverse, uncorrelated picks
+            base_corr_penalty = 0.97 ** max(0, len(probs) - 1)
+            diversity_bonus = 1.0 + (stat_diversity - 0.5) * 0.06 + (0.02 if has_both_directions else 0)
+            player_penalty = 0.95 if player_diversity < 1.0 else 1.0
+            _corr_penalty = base_corr_penalty * diversity_bonus * player_penalty
             combined_prob *= _corr_penalty
 
             if combined_prob < min_combined_prob:

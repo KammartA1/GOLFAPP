@@ -65,6 +65,15 @@ class PressureModel:
         # pressure_coefficient: positive = chokes, negative = thrives
         adjustment = player.pressure_coefficient * pressure_intensity
 
+        # Closer index (R9): in round 4, players in contention get bonus/penalty
+        if (self.config.closer_index_enabled
+                and round_num == 4
+                and player.closer_index != 0.0
+                and current_position <= 10):
+            # closer_index > 0 means player thrives, so subtract from adjustment (helps)
+            closer_bonus = player.closer_index * round_pressure * position_pressure * closeness_factor
+            adjustment -= closer_bonus
+
         # Clamp to reasonable range
         max_effect = self.config.max_pressure_effect_sg
         return float(np.clip(adjustment, -max_effect, max_effect))
@@ -93,6 +102,10 @@ class PressureModel:
 
         intensity = hole_factor * (1.0 - strokes_off_lead / 5.0)
         adjustment = player.pressure_coefficient * intensity * 0.5
+
+        # Closer index: thrives under Sunday back nine pressure
+        if self.config.closer_index_enabled and player.closer_index != 0.0:
+            adjustment -= player.closer_index * intensity * 0.5
 
         max_effect = self.config.max_pressure_effect_sg / 18.0  # Per hole
         return float(np.clip(adjustment, -max_effect, max_effect))

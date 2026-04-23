@@ -66,8 +66,12 @@ class CourseModel:
         total_yardage: int = 7200,
         n_par3: int = 4,
         n_par5: int = 4,
+        rng: np.random.Generator = None,
     ) -> CourseProfile:
         """Generate a standard course profile with realistic hole distribution."""
+        if rng is None:
+            rng = np.random.default_rng(42)
+
         holes = []
         n_par4 = 18 - n_par3 - n_par5
 
@@ -78,8 +82,8 @@ class CourseModel:
                 number=0,  # Will be reassigned
                 par=3,
                 distance=int(dist),
-                difficulty=np.random.uniform(-0.1, 0.2),
-                avg_score_to_par=np.random.uniform(0.05, 0.20),
+                difficulty=rng.uniform(-0.1, 0.2),
+                avg_score_to_par=rng.uniform(0.05, 0.20),
             ))
 
         # Par-4 holes
@@ -89,8 +93,8 @@ class CourseModel:
                 number=0,
                 par=4,
                 distance=int(dist),
-                difficulty=np.random.uniform(-0.15, 0.25),
-                avg_score_to_par=np.random.uniform(-0.05, 0.15),
+                difficulty=rng.uniform(-0.15, 0.25),
+                avg_score_to_par=rng.uniform(-0.05, 0.15),
             ))
 
         # Par-5 holes
@@ -100,12 +104,12 @@ class CourseModel:
                 number=0,
                 par=5,
                 distance=int(dist),
-                difficulty=np.random.uniform(-0.2, 0.1),
-                avg_score_to_par=np.random.uniform(-0.30, -0.10),
+                difficulty=rng.uniform(-0.2, 0.1),
+                avg_score_to_par=rng.uniform(-0.30, -0.10),
             ))
 
         # Shuffle to create realistic routing
-        np.random.shuffle(holes)
+        rng.shuffle(holes)
         for i, hole in enumerate(holes):
             hole.number = i + 1
 

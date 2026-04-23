@@ -138,6 +138,7 @@ class TournamentSimulator:
                 "total_score": 0,
                 "made_cut": True,
                 "finish_position": n_players,
+                "prev_form": None,  # Track previous round form for C8 correlation
             }
 
         # Rounds 1-2: everyone plays
@@ -163,9 +164,12 @@ class TournamentSimulator:
                     weather=weather,
                     current_position=75,  # Approximate for early rounds
                     field_size=n_players,
+                    wave_adjustment=wave_adj.get(player.name, 0.0),
+                    prev_form=player_data[player.name]["prev_form"],
                 )
                 player_data[player.name]["round_scores"].append(result["total_score"])
                 player_data[player.name]["total_score"] += result["total_score"]
+                player_data[player.name]["prev_form"] = result["daily_form"]
 
         # Apply cut
         scores_after_r2 = [
@@ -203,9 +207,11 @@ class TournamentSimulator:
                     current_position=pos,
                     strokes_off_lead=off_lead,
                     field_size=len(active_players),
+                    prev_form=player_data[name]["prev_form"],
                 )
                 player_data[name]["round_scores"].append(result["total_score"])
                 player_data[name]["total_score"] += result["total_score"]
+                player_data[name]["prev_form"] = result["daily_form"]
 
         # Determine final positions
         final_scores = []

@@ -102,7 +102,7 @@ class CutModel:
         # 36-hole scoring variance
         # Variance of sum of 2 rounds (partially correlated)
         round_var = player_round_std ** 2
-        correlation = 0.15  # Day-to-day correlation
+        correlation = self.config.round_to_round_correlation
         total_var_36h = 2 * round_var * (1 + correlation)
         total_std_36h = np.sqrt(total_var_36h)
 

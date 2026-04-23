@@ -35,6 +35,18 @@ class SimulationConfig:
     # Weather model
     weather_enabled: bool = True
 
+    # Momentum / streak physics (R8)
+    momentum_carry: float = 0.04
+
+    # Closer index (R9)
+    closer_index_enabled: bool = True
+
+    # Wire wave advantage (C9)
+    wave_advantage_enabled: bool = True
+
+    # Field strength adjustment (R10)
+    field_strength_adj: float = 0.0
+
     # Random seed (None = truly random)
     random_seed: int | None = None
 

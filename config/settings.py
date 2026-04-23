@@ -64,9 +64,9 @@ FORM_WINDOWS = {
 # [v8.0] Regression factors — research: long game regresses LESS than short game
 # Predictive hierarchy: OTT > APP > ARG > PUTT
 PUTTING_REGRESSION_FACTOR = 0.55    # Regress hard — putting is mostly noise week-to-week
-OTT_REGRESSION_FACTOR = 0.20        # Most stable — trust it (NEW)
-APPROACH_REGRESSION_FACTOR = 0.15   # Most stable and highest impact
-ATG_REGRESSION_FACTOR = 0.35        # Moderate regression (NEW)
+OTT_REGRESSION_FACTOR = 0.15        # Most stable category (r~0.75 autocorrelation)
+APPROACH_REGRESSION_FACTOR = 0.20   # Second most stable (r~0.70)
+ATG_REGRESSION_FACTOR = 0.35        # Moderate regression (r~0.55)
 
 # Cross-category predictive signal (from DataGolf research):
 # A golfer with +1 SG:OTT will have future SG:APP predicted at ~+0.2
@@ -86,9 +86,9 @@ FULL_CONFIDENCE_EVENTS = 30      # Full confidence at 30+ events (was 20)
 # KELLY SIZING PARAMETERS
 # ─────────────────────────────────────────────
 # [v6.0] Aggressive Kelly for 200%+ ROI: higher fraction + higher edge threshold
-KELLY_FRACTION       = 0.40     # 2/5 Kelly — aggressive for high-edge plays only
-MAX_BET_PCT_BANKROLL = 0.08     # Up to 8% on elite single bets
-MIN_EDGE_THRESHOLD   = 0.06     # Minimum 6% edge to place any bet (was 4%)
+KELLY_FRACTION       = 0.20     # 1/5 Kelly — conservative for golf's extreme variance
+MAX_BET_PCT_BANKROLL = 0.05     # Up to 5% on elite single bets
+MIN_EDGE_THRESHOLD   = 0.06     # Minimum 6% edge to place any bet
 MAX_GPP_EXPOSURE     = 0.05     # Max 5% bankroll per DFS slate (was 3%)
 MAX_H2H_EXPOSURE     = 0.08     # Max 8% on H2H matchups (was 5%)
 MAX_OUTRIGHT_EXPOSURE= 0.02     # Max 2% on outright futures (was 1%)
@@ -139,4 +139,12 @@ LOG_LEVEL        = "INFO"
 TRACK_ALL_BETS   = True
 # [v6.0] Tighter audit controls
 MIN_AUDIT_SAMPLE = 20          # Min bets before edge decay analysis (was 30)
-ROI_ALERT_THRESHOLD = -0.05    # Alert if rolling ROI drops below -5% (was -10%)
+ROI_ALERT_THRESHOLD = -0.05    # Alert if rolling ROI drops below -5%
+
+# ─────────────────────────────────────────────
+# SIM/ANALYTICAL BLEND (v9.0)
+# ─────────────────────────────────────────────
+SIM_WEIGHT = 0.70              # 70% simulation, 30% analytical
+ANALYTICAL_WEIGHT = 0.30       # Analytical model provides Bayesian priors
+DEFAULT_SIM_N = 10000          # Tournament simulations
+PROP_SIM_N = 5000              # Prop-level simulations
