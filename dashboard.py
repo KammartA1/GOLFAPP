@@ -2043,36 +2043,40 @@ def fetch_prizepicks_golf_lines(scraper_key: str = "") -> list:
 
     data = None
 
-    # Method 1: curl_cffi with edge101 impersonation (bypasses PerimeterX)
-    if HAS_CURL_CFFI and data is None:
-        for browser in ["edge101", "safari17_0", "chrome124"]:
+    def _try_fetch():
+        """Single attempt across all methods. Returns (json_data, is_429)."""
+        # Method 1: curl_cffi with multi-browser impersonation
+        if HAS_CURL_CFFI:
+            for browser in ["edge101", "safari17_0", "chrome124"]:
+                try:
+                    resp = cffi_requests.get(
+                        PP_API, params=params, headers=PP_HEADERS,
+                        impersonate=browser, timeout=25,
+                    )
+                    if resp.ok:
+                        return resp.json(), False
+                    if resp.status_code == 429:
+                        return None, True
+                except Exception:
+                    continue
+
+        # Method 2: ScraperAPI proxy
+        if scraper_key:
             try:
-                resp = cffi_requests.get(
-                    PP_API, params=params, headers=PP_HEADERS,
-                    impersonate=browser, timeout=25,
+                full_url = f"{PP_API}?per_page=500"
+                resp = requests.get(
+                    "https://api.scraperapi.com",
+                    params={"api_key": scraper_key, "url": full_url, "render": "false"},
+                    timeout=30,
                 )
                 if resp.ok:
-                    data = resp.json()
-                    break
+                    return resp.json(), False
+                if resp.status_code == 429:
+                    return None, True
             except Exception:
-                continue
+                pass
 
-    # Method 2: ScraperAPI proxy
-    if data is None and scraper_key:
-        try:
-            full_url = f"{PP_API}?per_page=500"
-            resp = requests.get(
-                "https://api.scraperapi.com",
-                params={"api_key": scraper_key, "url": full_url, "render": "false"},
-                timeout=30,
-            )
-            if resp.ok:
-                data = resp.json()
-        except Exception:
-            pass
-
-    # Method 3: Direct request (works from residential IPs)
-    if data is None:
+        # Method 3: Direct request (works from residential IPs)
         try:
             resp = requests.get(PP_API, params=params, headers={
                 **PP_HEADERS,
@@ -2080,9 +2084,23 @@ def fetch_prizepicks_golf_lines(scraper_key: str = "") -> list:
                               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             }, timeout=20)
             if resp.ok:
-                data = resp.json()
+                return resp.json(), False
+            if resp.status_code == 429:
+                return None, True
         except Exception:
             pass
+
+        return None, False
+
+    for _attempt in range(5):
+        data, _is_429 = _try_fetch()
+        if data is not None:
+            break
+        if _is_429 and _attempt < 4:
+            time.sleep(10 * (_attempt + 1))
+            continue
+        if _attempt < 4:
+            time.sleep(2 ** (_attempt + 1))
 
     if not data:
         return []
