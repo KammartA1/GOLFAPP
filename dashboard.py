@@ -340,11 +340,13 @@ html, body, [class*="css"] {
     background: transparent;
     color: #64748b;
     border-radius: 8px;
-    font-weight: 600;
-    font-size: 0.85rem;
-    padding: 8px 20px;
+    font-weight: 700;
+    font-size: 0.82rem;
+    padding: 10px 24px;
     border: none;
     transition: all 0.2s ease;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
 }
 .stTabs [data-baseweb="tab"]:hover {
     color: #94a3b8;
