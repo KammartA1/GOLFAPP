@@ -3113,9 +3113,9 @@ def _estimate_sg_from_odds_rank(rank_idx: int, field_size: int, odds: int = 0) -
     return sg_ott, sg_app, sg_arg, sg_putt, events
 
 
-# ── Sample data generator for demo mode ─────────────────────
+# ── Baseline field generator (fallback when ESPN unavailable) ──
 def _generate_sample_players(n: int = 30, course: str = "Augusta National") -> pd.DataFrame:
-    """Generate realistic sample player data for demo/testing."""
+    """Generate field from baseline SG data when live data unavailable."""
     names = [
         "Scottie Scheffler", "Rory McIlroy", "Jon Rahm", "Viktor Hovland",
         "Xander Schauffele", "Patrick Cantlay", "Collin Morikawa", "Ludvig Aberg",
