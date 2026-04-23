@@ -2944,10 +2944,13 @@ SG_TO_STAT_SENSITIVITY = {
 }
 
 
-def _resolve_pair_prop(player_name: str, proj_df, stat_type: str) -> dict | None:
+def _resolve_pair_prop(player_name: str, proj_df, stat_type: str,
+                       line: float = 0.0) -> dict | None:
     """Detect and resolve pair/combo PrizePicks props (e.g. 'Player A + Player B').
 
     Returns dict with combined projection, std, both player SG dicts, or None if not a pair.
+    For strokes at team events (Zurich Classic etc.), projects a team score using
+    best-ball or foursomes model instead of summing individual scores.
     """
     for sep in (" + ", " & "):
         if sep not in player_name:
@@ -2986,14 +2989,34 @@ def _resolve_pair_prop(player_name: str, proj_df, stat_type: str) -> dict | None
             return {"is_pair": True, "valid": False, "missing": missing,
                     "warning": f"Missing player data: {', '.join(missing)}"}
 
-        combined_proj = sum(projs)
-        combined_std = round(math.sqrt(sum(s ** 2 for s in stds)), 2)
+        # ── Team strokes: project team score, not sum of individual scores ──
+        # At team events (Zurich Classic), PrizePicks lines are team scores
+        # (~64 for four-ball, ~68 for foursomes), not sums of individual rounds.
+        if stat_type == "strokes":
+            avg_sg = {k: sum(d.get(k, 0) for d in sg_dicts) / len(sg_dicts)
+                      for k in ("sg_ott", "sg_app", "sg_arg", "sg_putt")}
+            base_proj, base_std = project_pp_stat("strokes", avg_sg)
+            if 0 < line < 67:
+                discount = 5.5
+                std_factor = 0.75
+            elif line >= 67:
+                discount = 1.0
+                std_factor = 0.90
+            else:
+                discount = 3.5
+                std_factor = 0.85
+            combined_proj = round(base_proj - discount, 2)
+            combined_std = round(base_std * std_factor, 2)
+        else:
+            combined_proj = round(sum(projs), 2)
+            combined_std = round(math.sqrt(sum(s ** 2 for s in stds)), 2)
+
         combined_sg = sum(
             sum(d.get(k, 0) for d in sg_dicts) for k in ["sg_ott", "sg_app", "sg_arg", "sg_putt"]
         )
         return {
             "is_pair": True, "valid": True,
-            "proj": round(combined_proj, 2), "std": combined_std,
+            "proj": combined_proj, "std": combined_std,
             "player_sg": combined_sg,
             "players": parts,
         }
@@ -4583,7 +4606,7 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
 
         # Quick projection preview — use course-adjusted SG components
         internal_stat = pp_internal_map.get(leg_stat, "strokes")
-        _pair = _resolve_pair_prop(leg_player, proj_df, internal_stat)
+        _pair = _resolve_pair_prop(leg_player, proj_df, internal_stat, line=leg_line)
         if _pair is not None and _pair.get("valid"):
             pv, ps = _pair["proj"], _pair["std"]
             leg_prob = prob_over(pv, leg_line, ps) if leg_side == "OVER" else prob_under(pv, leg_line, ps)
@@ -5502,7 +5525,7 @@ def tab_live_scanner(proj_df: pd.DataFrame, settings: dict):
                 line_val = pp_line["line"]
 
                 # Check for pair/combo prop (e.g. "Player A + Player B")
-                pair_result = _resolve_pair_prop(player_name, proj_df, stat_type)
+                pair_result = _resolve_pair_prop(player_name, proj_df, stat_type, line=line_val)
                 if pair_result is not None:
                     if not pair_result.get("valid"):
                         scan_results.append({
@@ -5521,6 +5544,22 @@ def tab_live_scanner(proj_df: pd.DataFrame, settings: dict):
                     proj_val = pair_result["proj"]
                     proj_std = pair_result["std"]
                     player_sg_total = pair_result["player_sg"]
+                    # Sanity guard: projection wildly inconsistent with line
+                    if line_val > 0 and proj_val > 0 and proj_val / line_val > 1.8:
+                        scan_results.append({
+                            "player": player_name, "stat": stat_display,
+                            "stat_internal": stat_type, "line": line_val,
+                            "projection": proj_val, "std": proj_std,
+                            "side": "N/A", "prob": 0.0,
+                            "p_over": 0.5, "p_under": 0.5,
+                            "edge": 0.0, "confidence": "DATA_ERROR",
+                            "engine_agreement": 0.0, "ci_80": (0.0, 0.0),
+                            "engines": {}, "sg_total": player_sg_total,
+                            "course_delta": 0.0,
+                            "warning": f"Projection ({proj_val}) vastly exceeds line ({line_val}) — likely unit mismatch",
+                            "is_pair": True,
+                        })
+                        continue
                 else:
                     # Single player lookup
                     player_match = proj_df[proj_df["player"] == player_name]
