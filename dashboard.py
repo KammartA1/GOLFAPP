@@ -1746,6 +1746,100 @@ def _get_odds_api_key() -> str:
     return os.environ.get("ODDS_API_KEY", "")
 
 
+_PGA_LAST_NAME_TO_FULL = {
+    "Scheffler": "Scottie Scheffler", "McIlroy": "Rory McIlroy",
+    "Schauffele": "Xander Schauffele", "Hovland": "Viktor Hovland", "Cantlay": "Patrick Cantlay",
+    "Morikawa": "Collin Morikawa", "Aberg": "Ludvig Aberg", "Clark": "Wyndham Clark",
+    "Homa": "Max Homa", "Fitzpatrick": "Matt Fitzpatrick", "Burns": "Sam Burns",
+    "Finau": "Tony Finau", "Theegala": "Sahith Theegala", "Fleetwood": "Tommy Fleetwood",
+    "Lowry": "Shane Lowry", "Harman": "Brian Harman", "Henley": "Russell Henley",
+    "Im": "Sungjae Im", "Kim": "Tom Kim", "Young": "Cameron Young",
+    "Thomas": "Justin Thomas", "Spieth": "Jordan Spieth", "Matsuyama": "Hideki Matsuyama",
+    "Conners": "Corey Conners", "Zalatoris": "Will Zalatoris", "Bradley": "Keegan Bradley",
+    "MacIntyre": "Robert MacIntyre", "Bhatia": "Akshay Bhatia",
+    "Horschel": "Billy Horschel", "Kirk": "Chris Kirk", "McCarthy": "Denny McCarthy",
+    "Day": "Jason Day", "Moore": "Taylor Moore", "An": "Byeong Hun An",
+    "Riley": "Davis Riley", "Straka": "Sepp Straka", "Rai": "Aaron Rai",
+    "Pendrith": "Taylor Pendrith", "Dunlap": "Nick Dunlap", "McNealy": "Maverick McNealy",
+    "Hadwin": "Adam Hadwin", "Cole": "Eric Cole", "Jaeger": "Stephan Jaeger",
+    "Lee": "Min Woo Lee", "Glover": "Lucas Glover", "Eckroat": "Austin Eckroat",
+    "Bezuidenhout": "Christiaan Bezuidenhout", "English": "Harris English",
+    "Scott": "Adam Scott", "Fowler": "Rickie Fowler", "Yu": "Kevin Yu",
+    "Poston": "J.T. Poston", "Woods": "Tiger Woods", "Koepka": "Brooks Koepka",
+    "Hossler": "Beau Hossler", "Ryder": "Sam Ryder", "Wu": "Dylan Wu",
+    "Dou": "Zecheng Dou", "Sargent": "Gordon Sargent",
+    "Cook": "Austin Cook", "Dufner": "Jason Dufner",
+    "Stevens": "Sam Stevens", "Bauchou": "Zach Bauchou",
+    "Malnati": "Peter Malnati", "Knox": "Russell Knox",
+    "Silverman": "Ben Silverman", "Champ": "Cameron Champ", "Brehm": "Ryan Brehm",
+    "Hubbard": "Mark Hubbard", "Hoffman": "Charley Hoffman", "Watney": "Nick Watney",
+    "Martin": "Ben Martin", "Crowe": "Trace Crowe",
+    "Kohles": "Ben Kohles", "Walker": "Danny Walker", "Stanger": "Jimmy Stanger",
+    "Lipsky": "David Lipsky", "Hoey": "Rico Hoey", "Ramey": "Chad Ramey",
+    "Lower": "Justin Lower", "Vilips": "Karl Vilips", "Thorbjornsen": "Michael Thorbjornsen",
+    "Brennan": "Michael Brennan", "Keefer": "Johnny Keefer",
+    "Hughes": "Mackenzie Hughes", "Kizzire": "Patton Kizzire",
+    "Thompson": "Davis Thompson", "Novak": "Andrew Novak",
+    "Mcgreevy": "Max McGreevy", "Roy": "Kevin Roy",
+    "Greyserman": "Max Greyserman", "Campos": "Rafael Campos", "Tosti": "Alejandro Tosti",
+    "Hoge": "Tom Hoge", "Hardy": "Nick Hardy",
+    "Smalley": "Alex Smalley", "Springer": "Hayden Springer",
+    "Byrd": "Jonathan Byrd", "Reavie": "Chez Reavie",
+    "Schmid": "Matti Schmid", "Power": "Seamus Power",
+    "Gordon": "Will Gordon", "Peterson": "Paul Peterson",
+    "Villegas": "Camilo Villegas", "Rozo": "Marcelo Rozo",
+    "Blair": "Zac Blair", "Fishburn": "Patrick Fishburn",
+    "Hahn": "James Hahn", "Stanley": "Kyle Stanley",
+    "Capan Iii": "Frankie Capan III", "Goodwin": "Noah Goodwin",
+    "Lamprecht": "Christo Lamprecht", "Shipley": "Neal Shipley",
+    "Neergaard-Petersen": "Rasmus Neergaard-Petersen", "Olesen": "Jacob Skov Olesen",
+    "Nyholm": "Pontus Nyholm",
+    "Higgs": "Harry Higgs", "Paul": "Jeremy Paul",
+    "Phillips": "Chandler Phillips",
+    "List": "Luke List", "Norlander": "Henrik Norlander",
+    "Merritt": "Troy Merritt", "Streb": "Robert Streb",
+    "Garnett": "Brice Garnett", "Hodges": "Lee Hodges",
+    "Dahmen": "Joel Dahmen", "Streelman": "Kevin Streelman",
+    "Putnam": "Andrew Putnam", "Smotherman": "Austin Smotherman",
+    "Lebioda": "Hank Lebioda",
+    "Wallace": "Matt Wallace", "Penge": "Marco Penge",
+    "Whaley": "Vince Whaley", "Sigg": "Greyson Sigg",
+    "Gerard": "Ryan Gerard", "Yellamaraju": "Sudarshan Yellamaraju",
+    "Higgo": "Garrick Higgo", "Kuchar": "Matt Kuchar",
+    "Van Rooyen": "Erik van Rooyen",
+    "Mccarty": "Matt McCarty", "Meissner": "Mac Meissner",
+    "Clanton": "Luke Clanton",
+    "Mouw": "William Mouw", "Kanaya": "Takumi Kanaya",
+    "Mitchell": "Keith Mitchell", "Snedeker": "Brandt Snedeker",
+    "Suber": "Jackson Suber", "Davis": "Cam Davis", "Ogilvy": "Geoff Ogilvy",
+    "Schenk": "Adam Schenk", "Duncan": "Tyler Duncan",
+    "Pavon": "Matthieu Pavon", "Couvra": "Martin Couvra",
+    "Palmer": "Ryan Palmer",
+    "Mullinax": "Trey Mullinax", "Skinns": "David Skinns",
+    "Piercy": "Scott Piercy", "Montgomery": "Taylor Montgomery",
+    "Reitan": "Kristoffer Reitan", "Ventura": "Kris Ventura",
+    "Ghim": "Doug Ghim", "Kang": "Jeffrey Kang",
+    "Ewart": "A.J. Ewart", "Jarvis": "Casey Jarvis",
+    "Dumont De Chassart": "Adrien Dumont de Chassart", "Chatfield": "Davis Chatfield",
+    "Parry": "John Parry", "Li": "Haotong Li", "Smith": "Jordan Smith",
+    "Nakajima": "Keita Nakajima", "Hirata": "Kensei Hirata",
+    "Blanchet": "Chandler Blanchet", "Vanderlaan": "John VanDerLaan",
+}
+
+# Team-level disambiguation for shared last names in team events
+_TEAM_NAME_OVERRIDES = {
+    "Griffin/Kohles": {"Griffin": "Lanto Griffin"},
+    "Griffin/Novak": {"Griffin": "Ben Griffin"},
+    "Yu/Kim": {"Kim": "Tom Kim"},
+    "Palmer/Kim": {"Kim": "Chan Kim"},
+    "Clanton/Brown": {"Brown": "Blades Brown"},
+    "Parry/Brown": {"Brown": "Dan Brown"},
+    "Nyholm/Svensson": {"Svensson": "Jesper Svensson"},
+    "Hadwin/Svensson": {"Svensson": "Adam Svensson"},
+    "Fitzpatrick/Fitzpatrick": {"Fitzpatrick": ["Matt Fitzpatrick", "Alex Fitzpatrick"]},
+}
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_espn_pga_field() -> dict:
     """Fetch the current/most-recent PGA Tour tournament field from ESPN.
@@ -1797,14 +1891,66 @@ def fetch_espn_pga_field() -> dict:
 
     players = []
     for comp in competitors:
-        ath = comp.get("athlete", {})
-        name = ath.get("displayName", "")
-        if name:
-            players.append({
-                "name": name,
-                "score": comp.get("score", ""),
-                "position": comp.get("status", {}).get("position", {}).get("displayName", ""),
-            })
+        comp_type = comp.get("type", "")
+        if comp_type == "team":
+            team = comp.get("team", {})
+            team_name = team.get("displayName", "") or team.get("name", "")
+            if team_name and "/" in team_name:
+                team_overrides = _TEAM_NAME_OVERRIDES.get(team_name, {})
+                override_counters = {}
+                seen_in_team = set()
+                for last_name in team_name.split("/"):
+                    last_name = last_name.strip()
+                    if not last_name:
+                        continue
+                    if last_name in team_overrides:
+                        override_val = team_overrides[last_name]
+                        if isinstance(override_val, list):
+                            idx = override_counters.get(last_name, 0)
+                            full_name = override_val[min(idx, len(override_val) - 1)]
+                            override_counters[last_name] = idx + 1
+                        else:
+                            full_name = override_val
+                    else:
+                        full_name = _PGA_LAST_NAME_TO_FULL.get(last_name, "")
+                        if not full_name:
+                            for key in _PGA_LAST_NAME_TO_FULL:
+                                if key.lower() == last_name.lower():
+                                    full_name = _PGA_LAST_NAME_TO_FULL[key]
+                                    break
+                        if not full_name:
+                            full_name = last_name
+                    if full_name in seen_in_team:
+                        full_name = f"{full_name} (2)"
+                    seen_in_team.add(full_name)
+                    players.append({
+                        "name": full_name,
+                        "score": comp.get("score", ""),
+                        "position": comp.get("status", {}).get("position", {}).get("displayName", ""),
+                        "team_name": team_name,
+                    })
+            elif team_name:
+                players.append({
+                    "name": team_name,
+                    "score": comp.get("score", ""),
+                    "position": "",
+                })
+        else:
+            ath = comp.get("athlete", {})
+            name = ath.get("displayName", "")
+            if name:
+                players.append({
+                    "name": name,
+                    "score": comp.get("score", ""),
+                    "position": comp.get("status", {}).get("position", {}).get("displayName", ""),
+                })
+
+    seen_names = set()
+    unique_players = []
+    for p in players:
+        if p["name"] not in seen_names:
+            seen_names.add(p["name"])
+            unique_players.append(p)
 
     venue = best.get("competitions", [{}])[0].get("venue", {})
     course_name = venue.get("fullName", "") or venue.get("shortName", "")
@@ -1812,7 +1958,7 @@ def fetch_espn_pga_field() -> dict:
     return {
         "event_name": event_name,
         "status": status,
-        "players": players,
+        "players": unique_players,
         "course_name": course_name,
     }
 
@@ -1942,7 +2088,7 @@ def fetch_prizepicks_golf_lines(scraper_key: str = "") -> list:
         return []
 
     # Build lookup maps from included resources
-    GOLF_LEAGUE_NAMES = {"PGA", "PGA TOUR", "GOLF", "LPGA", "LIV GOLF", "LIVGOLF", "DP WORLD TOUR"}
+    GOLF_LEAGUE_NAMES = {"PGA", "PGA TOUR", "GOLF", "LPGA", "DP WORLD TOUR"}
 
     player_map = {}
     league_map = {}
@@ -3020,7 +3166,7 @@ def pp_combo_ev(pick_probs: list, play_type: str = "power_play") -> dict:
 _PLAYER_SG_BASELINES = {
     "Scottie Scheffler":   {"sg_ott": 0.75, "sg_app": 1.10, "sg_arg": 0.30, "sg_putt": 0.35, "events": 22},
     "Rory McIlroy":        {"sg_ott": 0.95, "sg_app": 0.70, "sg_arg": 0.15, "sg_putt": 0.10, "events": 20},
-    "Jon Rahm":            {"sg_ott": 0.55, "sg_app": 0.80, "sg_arg": 0.25, "sg_putt": 0.20, "events": 18},
+    "Davis Thompson":      {"sg_ott": 0.45, "sg_app": 0.50, "sg_arg": 0.15, "sg_putt": 0.15, "events": 22},
     "Xander Schauffele":   {"sg_ott": 0.50, "sg_app": 0.75, "sg_arg": 0.30, "sg_putt": 0.40, "events": 22},
     "Viktor Hovland":      {"sg_ott": 0.60, "sg_app": 0.90, "sg_arg": -0.10, "sg_putt": 0.00, "events": 21},
     "Patrick Cantlay":     {"sg_ott": 0.25, "sg_app": 0.70, "sg_arg": 0.25, "sg_putt": 0.50, "events": 20},
@@ -3043,12 +3189,12 @@ _PLAYER_SG_BASELINES = {
     "Jordan Spieth":       {"sg_ott": 0.10, "sg_app": 0.50, "sg_arg": 0.35, "sg_putt": 0.20, "events": 19},
     "Hideki Matsuyama":    {"sg_ott": 0.35, "sg_app": 0.80, "sg_arg": 0.05, "sg_putt": -0.10, "events": 18},
     "Corey Conners":       {"sg_ott": 0.30, "sg_app": 0.70, "sg_arg": 0.05, "sg_putt": -0.15, "events": 24},
-    "Cameron Smith":       {"sg_ott": 0.15, "sg_app": 0.30, "sg_arg": 0.50, "sg_putt": 0.55, "events": 16},
-    "Dustin Johnson":      {"sg_ott": 0.80, "sg_app": 0.35, "sg_arg": 0.00, "sg_putt": -0.10, "events": 14},
+    "Michael Thorbjornsen": {"sg_ott": 0.40, "sg_app": 0.45, "sg_arg": 0.10, "sg_putt": 0.10, "events": 18},
+    "Mackenzie Hughes":    {"sg_ott": 0.15, "sg_app": 0.40, "sg_arg": 0.20, "sg_putt": 0.15, "events": 22},
     "Brooks Koepka":       {"sg_ott": 0.65, "sg_app": 0.45, "sg_arg": 0.05, "sg_putt": -0.05, "events": 16},
     "Will Zalatoris":      {"sg_ott": 0.40, "sg_app": 0.85, "sg_arg": -0.05, "sg_putt": -0.15, "events": 15},
     "Keegan Bradley":      {"sg_ott": 0.35, "sg_app": 0.40, "sg_arg": 0.15, "sg_putt": 0.10, "events": 24},
-    "Tyrrell Hatton":      {"sg_ott": 0.30, "sg_app": 0.55, "sg_arg": 0.20, "sg_putt": 0.10, "events": 19},
+    "Tom Hoge":            {"sg_ott": 0.30, "sg_app": 0.40, "sg_arg": 0.15, "sg_putt": 0.10, "events": 23},
     "Robert MacIntyre":    {"sg_ott": 0.40, "sg_app": 0.45, "sg_arg": 0.15, "sg_putt": 0.10, "events": 20},
     "Akshay Bhatia":       {"sg_ott": 0.55, "sg_app": 0.50, "sg_arg": 0.05, "sg_putt": 0.10, "events": 23},
     "Billy Horschel":      {"sg_ott": 0.20, "sg_app": 0.40, "sg_arg": 0.20, "sg_putt": 0.15, "events": 24},
@@ -3077,7 +3223,7 @@ _PLAYER_SG_BASELINES = {
     "Kevin Yu":            {"sg_ott": 0.35, "sg_app": 0.35, "sg_arg": 0.05, "sg_putt": 0.00, "events": 24},
     "J.T. Poston":         {"sg_ott": 0.10, "sg_app": 0.30, "sg_arg": 0.20, "sg_putt": 0.25, "events": 26},
     "Tiger Woods":         {"sg_ott": 0.30, "sg_app": 0.40, "sg_arg": 0.20, "sg_putt": 0.10, "events": 5},
-    "Phil Mickelson":      {"sg_ott": 0.10, "sg_app": 0.15, "sg_arg": 0.25, "sg_putt": -0.05, "events": 10},
+    "Matthieu Pavon":      {"sg_ott": 0.40, "sg_app": 0.55, "sg_arg": 0.10, "sg_putt": 0.00, "events": 19},
 }
 
 _PLAYER_SG_INDEX = {k.lower(): v for k, v in _PLAYER_SG_BASELINES.items()}
@@ -3119,14 +3265,14 @@ def _estimate_sg_from_odds_rank(rank_idx: int, field_size: int, odds: int = 0) -
 def _generate_sample_players(n: int = 30, course: str = "Augusta National") -> pd.DataFrame:
     """Generate field from baseline SG data when live data unavailable."""
     names = [
-        "Scottie Scheffler", "Rory McIlroy", "Jon Rahm", "Viktor Hovland",
-        "Xander Schauffele", "Patrick Cantlay", "Collin Morikawa", "Ludvig Aberg",
-        "Wyndham Clark", "Max Homa", "Matt Fitzpatrick", "Sam Burns",
-        "Tony Finau", "Sahith Theegala", "Tommy Fleetwood", "Shane Lowry",
-        "Brian Harman", "Russell Henley", "Sungjae Im", "Tom Kim",
-        "Cameron Young", "Justin Thomas", "Jordan Spieth", "Hideki Matsuyama",
-        "Corey Conners", "Cameron Smith", "Dustin Johnson", "Brooks Koepka",
-        "Will Zalatoris", "Keegan Bradley",
+        "Scottie Scheffler", "Rory McIlroy", "Xander Schauffele", "Viktor Hovland",
+        "Patrick Cantlay", "Collin Morikawa", "Ludvig Aberg", "Wyndham Clark",
+        "Max Homa", "Matt Fitzpatrick", "Sam Burns", "Tony Finau",
+        "Sahith Theegala", "Tommy Fleetwood", "Shane Lowry", "Brian Harman",
+        "Russell Henley", "Sungjae Im", "Tom Kim", "Cameron Young",
+        "Justin Thomas", "Jordan Spieth", "Hideki Matsuyama", "Corey Conners",
+        "Will Zalatoris", "Keegan Bradley", "Brooks Koepka", "Davis Thompson",
+        "Sepp Straka", "Robert MacIntyre", "Akshay Bhatia",
     ][:n]
     rows = []
     for i, name in enumerate(names):
@@ -3534,8 +3680,14 @@ def render_sidebar() -> dict:
         # Try ESPN live detection first for accurate tournament info
         espn_tournament = None
         espn_course = None
-        if "espn_data" not in st.session_state:
+        existing_espn = st.session_state.get("espn_data")
+        should_fetch = (
+            "espn_data" not in st.session_state
+            or (existing_espn and len(existing_espn.get("players", [])) == 0)
+        )
+        if should_fetch:
             try:
+                fetch_espn_pga_field.clear()
                 espn_data = fetch_espn_pga_field()
                 if espn_data and espn_data.get("event_name"):
                     st.session_state["espn_data"] = espn_data
@@ -4249,7 +4401,7 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
 
     all_player_list = proj_df["player"].tolist()
     if pp_lines:
-        pp_player_list = sorted(set(l["player"] for l in pp_lines if l.get("league", "").upper() in ("PGA", "PGA TOUR", "GOLF", "LIVGOLF")))
+        pp_player_list = sorted(set(l["player"] for l in pp_lines if l.get("league", "").upper() in ("PGA", "PGA TOUR", "GOLF")))
         if pp_player_list:
             all_player_list = pp_player_list
 
@@ -6525,6 +6677,8 @@ def tab_simulator(proj_df: pd.DataFrame, settings: dict):
     try:
         from simulation.tournament_engine import TournamentSimulator
         from simulation.config import SimulationConfig
+        from simulation.player_model import SimPlayer
+        from simulation.course_model import CourseModel
 
         n_sims = st.slider("Simulations", 100, 10000, 1000, 100, key="sim_n")
         config = SimulationConfig(n_simulations=n_sims)
@@ -6535,24 +6689,31 @@ def tab_simulator(proj_df: pd.DataFrame, settings: dict):
             if st.button("Run Tournament Simulation", key="run_sim"):
                 with st.spinner(f"Simulating {n_sims} tournaments..."):
                     engine = TournamentSimulator(config=config)
-                    players = proj_df.head(30).to_dict('records') if len(proj_df) > 30 else proj_df.to_dict('records')
-                    results = engine.simulate_tournament(players, settings.get('course', 'Default'))
+                    records = proj_df.head(30).to_dict('records') if len(proj_df) > 30 else proj_df.to_dict('records')
+                    sim_players = []
+                    for r in records:
+                        sim_players.append(SimPlayer(
+                            name=r.get("player", "Unknown"),
+                            sg_total=r.get("sg_regressed", r.get("sg_total", 0.0)),
+                            sg_ott=r.get("sg_ott", 0.0),
+                            sg_app=r.get("sg_app", 0.0),
+                            sg_atg=r.get("sg_arg", 0.0),
+                            sg_putt=r.get("sg_putt", 0.0),
+                            world_rank=r.get("world_rank", 100),
+                        ))
+                    course_name = settings.get('course', 'Default')
+                    course_model = CourseModel()
+                    course_profile = course_model.generate_default_course(name=course_name)
+                    results_df = engine.simulate_tournament(sim_players, course_profile)
 
-                    if results:
+                    if results_df is not None and not results_df.empty:
                         st.success("Simulation complete!")
-                        result_rows = []
-                        for name, data in sorted(results.items(), key=lambda x: x[1].get('win_prob', 0), reverse=True)[:20]:
-                            result_rows.append({
-                                "Player": name,
-                                "Win %": f"{data.get('win_prob', 0)*100:.1f}%",
-                                "Top 5 %": f"{data.get('top5_prob', 0)*100:.1f}%",
-                                "Top 10 %": f"{data.get('top10_prob', 0)*100:.1f}%",
-                                "Top 20 %": f"{data.get('top20_prob', 0)*100:.1f}%",
-                                "Make Cut %": f"{data.get('make_cut_prob', 0)*100:.1f}%",
-                                "Avg Score": f"{data.get('avg_total', 0):.1f}",
-                            })
-                        if result_rows:
-                            st.dataframe(pd.DataFrame(result_rows), use_container_width=True)
+                        display_df = results_df.head(20)[["name", "win_prob", "top5_prob", "top10_prob", "top20_prob", "make_cut_prob", "avg_score"]].copy()
+                        display_df.columns = ["Player", "Win %", "Top 5 %", "Top 10 %", "Top 20 %", "Make Cut %", "Avg Score"]
+                        for col in ["Win %", "Top 5 %", "Top 10 %", "Top 20 %", "Make Cut %"]:
+                            display_df[col] = display_df[col].apply(lambda x: f"{x*100:.1f}%")
+                        display_df["Avg Score"] = display_df["Avg Score"].apply(lambda x: f"{x:.1f}")
+                        st.dataframe(display_df, use_container_width=True)
         else:
             st.warning("Load player data first (PrizePicks Lab or Live Scanner).")
     except Exception as e:
