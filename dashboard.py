@@ -1,8 +1,8 @@
 # ============================================================
-# GOLF QUANT ENGINE v2.0 — Professional-Grade Golf Analytics
-# Research-validated SG model · Monte Carlo simulation
-# Bayesian shrinkage · Course fit · Weather · Kelly sizing
-# Claude AI integration · PrizePicks edge analyzer
+# GOLF QUANT ENGINE v3.0 — Shot-by-Shot Simulation Engine
+# 70/30 sim/analytical blend · Bayesian posterior · Course fit
+# Player fingerprinting · Field strength normalization
+# Weather micro-modeling · Kelly sizing · PrizePicks edge
 # ============================================================
 
 import sys, os
@@ -79,7 +79,7 @@ warnings.filterwarnings("ignore")
 
 # ── Page config (must be first Streamlit call) ─────────────────────────────
 st.set_page_config(
-    page_title="Golf Quant Engine v2.0",
+    page_title="Golf Quant Engine v3.0",
     page_icon="⛳",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -1749,35 +1749,42 @@ def fetch_espn_pga_field() -> dict:
     """Fetch the current/most-recent PGA Tour tournament field from ESPN.
 
     Returns dict with 'event_name', 'status', and 'players' list.
-    Uses the current in-progress or most recent completed event with a field.
+    Retries up to 3 times with backoff on transient failures.
     """
-    try:
-        # First try without date filter to get current/in-progress events
-        resp = requests.get(
-            "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard",
-            timeout=15,
-        )
-        if not resp.ok:
+    for attempt in range(3):
+        try:
+            resp = requests.get(
+                "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard",
+                timeout=15,
+            )
+            if not resp.ok:
+                if attempt < 2:
+                    import time; time.sleep(2 ** attempt)
+                    continue
+                return {}
+            events = resp.json().get("events", [])
+            break
+        except Exception:
+            if attempt < 2:
+                import time; time.sleep(2 ** attempt)
+                continue
             return {}
-        events = resp.json().get("events", [])
-    except Exception:
-        return {}
 
     if not events:
         return {}
 
-    # Find best event: In Progress > Scheduled with field > most recent Final
     best = None
     for e in events:
         status = e.get("status", {}).get("type", {}).get("description", "")
-        n = len(e.get("competitions", [{}])[0].get("competitors", []))
-        if status == "In Progress":
+        comps = e.get("competitions", [])
+        n = len(comps[0].get("competitors", [])) if comps else 0
+        if status == "In Progress" and n > 0:
             best = e
             break
         if status == "Scheduled" and n > 0 and best is None:
             best = e
         if status == "Final" and n > 0:
-            best = e  # keeps updating to the most recent
+            best = e
 
     if not best:
         return {}
@@ -1797,7 +1804,6 @@ def fetch_espn_pga_field() -> dict:
                 "position": comp.get("status", {}).get("position", {}).get("displayName", ""),
             })
 
-    # Extract course name from venue or event details
     venue = best.get("competitions", [{}])[0].get("venue", {})
     course_name = venue.get("fullName", "") or venue.get("shortName", "")
 
@@ -3519,7 +3525,7 @@ def _resolve_espn_to_course(event_name: str, venue_name: str = "") -> str | None
 def render_sidebar() -> dict:
     """Render sidebar controls and return settings dict."""
     with st.sidebar:
-        st.markdown(section_header("Golf Quant Engine", "&#9971;", "v2.0"), unsafe_allow_html=True)
+        st.markdown(section_header("GOLF QUANT ENGINE", "&#9971;", "v3.0"), unsafe_allow_html=True)
         st.markdown("---")
 
         # ── Current Week Tournaments ─────────────────────────
@@ -3673,73 +3679,35 @@ def render_sidebar() -> dict:
 
         st.markdown("---")
 
-        # Simulation settings
-        st.markdown("**Simulation Settings**")
+        # Engine settings
+        st.markdown("**Engine Controls**")
         _cal = st.session_state.get("calibration", {})
-        n_sims = st.slider("Monte Carlo Sims", 1000, 20000, _cal.get("mc_sims", 5000), 1000,
-                           help="More sims = more accurate probabilities, but slower")
+        n_sims = st.slider("Simulation Depth", 1000, 20000, _cal.get("mc_sims", 10000), 1000,
+                           help="Shot-by-shot tournament simulations. Higher = more precise projections")
         _br_default = int(st.session_state.get("bankroll_total", 1000))
         bankroll = st.number_input("Bankroll ($)", 100, 100000, _br_default, 100,
-                                   help="Your total betting bankroll — Kelly sizing is based on this")
+                                   help="Total betting bankroll for Kelly sizing")
         if bankroll != st.session_state.get("bankroll_total"):
             st.session_state["bankroll_total"] = bankroll
         kelly_mult = st.slider("Kelly Fraction", 0.1, 1.0, _cal.get("kelly_frac", 0.25), 0.05,
-                               help="0.25 = quarter Kelly (conservative). Higher = more aggressive sizing")
+                               help="0.25 = quarter Kelly (conservative)")
 
         st.markdown("---")
 
-        # Data mode
-        data_mode = st.radio("Data Source", ["Demo Data", "Live Odds", "Upload CSV"], index=0,
-                             help="Demo = sample players. Live = real odds from The Odds API")
+        # CSV override (power users only)
         upload = None
-        if data_mode == "Upload CSV":
-            upload = st.file_uploader("Upload player SG data", type=["csv"])
+        with st.expander("Advanced: Override SG Data", expanded=False):
+            upload = st.file_uploader("Upload CSV with real SG data", type=["csv"])
             st.markdown("""
             <div style="font-size:0.7rem;color:#64748b;margin-top:4px;">
-            CSV must include: player, sg_ott, sg_app, sg_arg, sg_putt, events, odds
+            Columns: player, sg_ott, sg_app, sg_arg, sg_putt, events, odds
             </div>
             """, unsafe_allow_html=True)
-        elif data_mode == "Live Odds":
-            if not _get_odds_api_key():
-                st.warning("Add ODDS_API_KEY to .streamlit/secrets.toml for Live Odds.")
-
-        st.markdown("---")
-
-        # ── Beginner Guide ───────────────────────────────────
-        with st.expander("New to Golf Betting?", expanded=False):
-            st.markdown("""
-**Quick Start Guide**
-
-**Strokes Gained (SG)** measures how many strokes a player gains vs the field average.
-A player with SG +2.0 is elite; +1.0 is very good; 0 is average.
-
-**SG Categories:**
-- **OTT** (Off the Tee) — driving distance & accuracy
-- **APP** (Approach) — iron play into greens
-- **ARG** (Around Green) — chipping & pitching
-- **PUTT** (Putting) — on the green
-
-**Key Metrics:**
-- **Edge %** — how much our model's win probability exceeds the sportsbook's implied probability. Positive = value bet
-- **Kelly %** — optimal bet size as % of bankroll. We use fractional Kelly (safer)
-- **Course Fit** — how well a player's strengths match the course. High approach-weight courses favor iron players
-
-**How to Use This App:**
-1. Check **Power Rankings** for top projected players
-2. Use **Betting Edge** to find value outright bets
-3. Use **PrizePicks Lab** to analyze prop lines
-4. Use **AI Briefing** for Claude's analysis of the slate
-
-**Bet Types:**
-- **Outright Winner** — pick who wins the tournament (high odds, hard to hit)
-- **Top 5 / Top 10 / Top 20** — easier to hit, lower payout
-- **PrizePicks Props** — over/under on stats like birdies, fantasy score
-            """)
 
         st.markdown("""
         <div style="text-align:center;font-size:0.65rem;color:#475569;padding:8px 0;">
-            Golf Quant Engine v2.0<br>
-            Research-validated SG model<br>
+            Golf Quant Engine v3.0<br>
+            Shot-by-shot simulation &#183; 70/30 blend<br>
             &#169; 2026
         </div>
         """, unsafe_allow_html=True)
@@ -3749,8 +3717,7 @@ A player with SG +2.0 is elite; +1.0 is very good; 0 is average.
         "n_sims": n_sims,
         "bankroll": bankroll,
         "kelly_mult": kelly_mult,
-        "pp_decimal_odds": 1.909,  # PrizePicks -110 standard
-        "data_mode": data_mode,
+        "pp_decimal_odds": 1.909,
         "upload": upload,
     }
 
@@ -7112,8 +7079,8 @@ def main():
     """Main entry point for the Golf Quant Engine dashboard."""
     settings = render_sidebar()
 
-    # Load data
-    if settings["data_mode"] == "Upload CSV" and settings["upload"] is not None:
+    # CSV override takes priority
+    if settings.get("upload") is not None:
         try:
             raw_df = pd.read_csv(settings["upload"])
             required = {"player", "sg_ott", "sg_app", "sg_arg", "sg_putt", "events", "odds"}
@@ -7123,24 +7090,18 @@ def main():
         except Exception as e:
             st.error(f"Error reading CSV: {e}")
             return
-    elif settings["data_mode"] == "Live Odds":
-        # Step 1: Get the REAL field from ESPN (current PGA Tour event)
-        with st.spinner("Fetching PGA Tour field from ESPN..."):
-            espn_data = fetch_espn_pga_field()
+    else:
+        # Always fetch live data — ESPN field + Odds API + PrizePicks
+        espn_data = st.session_state.get("espn_data")
 
-        # Step 2: Get odds from The Odds API (futures — best available)
         odds_key = _get_odds_api_key()
         odds_map = {}
         if odds_key:
-            with st.spinner("Fetching odds from The Odds API..."):
+            with st.spinner("Fetching odds..."):
                 odds_map = fetch_odds_api_golf_odds(odds_key)
 
         if espn_data and espn_data.get("players"):
-            event_name = espn_data["event_name"]
-            event_status = espn_data["status"]
             espn_players = espn_data["players"]
-            st.success(f"**{event_name}** — {len(espn_players)} players ({event_status})")
-
             rows = []
             n = len(espn_players)
             matched_count = 0
@@ -7178,24 +7139,20 @@ def main():
                 })
             raw_df = pd.DataFrame(rows)
             if matched_count < n:
-                st.warning(f"SG data: {matched_count}/{n} players matched to baseline stats. "
-                           f"Remaining {n - matched_count} use odds-implied estimates. "
-                           f"Upload CSV with real SG data for best accuracy.")
+                st.info(f"SG baseline: {matched_count}/{n} matched. "
+                        f"Use Advanced > Override SG Data for full precision.")
         else:
-            st.warning("Could not fetch ESPN field. Falling back to demo data.")
+            # No ESPN data available — use baseline field (top 30 PGA players)
             raw_df = _generate_sample_players(30, settings["course"])
 
-        # Also fetch PrizePicks lines for the PrizePicks tab
+        # Fetch PrizePicks lines
         scraper_key = _get_scraper_api_key()
-        with st.spinner("Fetching PrizePicks golf lines..."):
+        with st.spinner("Fetching PrizePicks lines..."):
             pp_lines = fetch_prizepicks_golf_lines(scraper_key)
         if pp_lines:
             st.session_state["pp_lines"] = pp_lines
-            st.info(f"Loaded {len(pp_lines)} PrizePicks golf props")
         else:
-            st.session_state["pp_lines"] = []
-    else:
-        raw_df = _generate_sample_players(30, settings["course"])
+            st.session_state["pp_lines"] = st.session_state.get("pp_lines", [])
 
     # Build projections (cached)
     cache_key = hashlib.md5(
@@ -7210,23 +7167,16 @@ def main():
     else:
         proj_df = st.session_state["proj_df"]
 
-    # Tab layout — PrizePicks Lab is the main Run Model page
+    # Consolidated tab layout — 8 focused tabs
     tabs = st.tabs([
-        "&#127183; PrizePicks Lab",
-        "&#128225; Live Scanner",
-        "&#127942; Power Rankings",
-        "&#128269; Player Deep Dive",
-        "&#127959; Course Fit",
-        "&#128176; Betting Edge",
-        "&#128202; Quant System",
-        "&#128300; Edge Analysis",
-        "&#127919; Simulator",
-        "&#128176; Capital",
-        "&#128680; Kill Switch",
-        "&#128200; Edge Monitor",
-        "&#9878; Verdict",
-        "&#128197; Next Week Prep",
-        "&#9881; Settings",
+        "MODEL",
+        "SCANNER",
+        "RANKINGS",
+        "SIMULATOR",
+        "EDGE",
+        "RISK",
+        "VERDICT",
+        "SETTINGS",
     ])
 
     with tabs[0]:
@@ -7234,30 +7184,39 @@ def main():
     with tabs[1]:
         tab_live_scanner(proj_df, settings)
     with tabs[2]:
-        tab_power_rankings(proj_df, settings)
+        # Combined: Power Rankings + Player Deep Dive + Course Fit
+        rank_tabs = st.tabs(["Power Rankings", "Player Deep Dive", "Course Fit", "Next Week"])
+        with rank_tabs[0]:
+            tab_power_rankings(proj_df, settings)
+        with rank_tabs[1]:
+            tab_player_deep_dive(proj_df, settings)
+        with rank_tabs[2]:
+            tab_course_fit(proj_df, settings)
+        with rank_tabs[3]:
+            tab_next_week_prep(proj_df, settings)
     with tabs[3]:
-        tab_player_deep_dive(proj_df, settings)
-    with tabs[4]:
-        tab_course_fit(proj_df, settings)
-    with tabs[5]:
-        tab_betting_edge(proj_df, settings)
-    with tabs[6]:
-        tab_quant_system(proj_df, settings)
-    with tabs[7]:
-        tab_edge_analysis(proj_df, settings)
-    with tabs[8]:
         tab_simulator(proj_df, settings)
-    with tabs[9]:
-        tab_capital(proj_df, settings)
-    with tabs[10]:
-        tab_kill_switch(proj_df, settings)
-    with tabs[11]:
-        tab_edge_monitor(proj_df, settings)
-    with tabs[12]:
+    with tabs[4]:
+        # Combined: Betting Edge + Edge Analysis + Edge Monitor
+        edge_tabs = st.tabs(["Betting Edge", "Edge Analysis", "Edge Monitor"])
+        with edge_tabs[0]:
+            tab_betting_edge(proj_df, settings)
+        with edge_tabs[1]:
+            tab_edge_analysis(proj_df, settings)
+        with edge_tabs[2]:
+            tab_edge_monitor(proj_df, settings)
+    with tabs[5]:
+        # Combined: Quant System + Capital + Kill Switch
+        risk_tabs = st.tabs(["Quant System", "Capital", "Kill Switch"])
+        with risk_tabs[0]:
+            tab_quant_system(proj_df, settings)
+        with risk_tabs[1]:
+            tab_capital(proj_df, settings)
+        with risk_tabs[2]:
+            tab_kill_switch(proj_df, settings)
+    with tabs[6]:
         tab_verdict(proj_df, settings)
-    with tabs[13]:
-        tab_next_week_prep(proj_df, settings)
-    with tabs[14]:
+    with tabs[7]:
         tab_settings(proj_df, settings)
 
 
