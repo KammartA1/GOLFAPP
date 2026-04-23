@@ -2489,6 +2489,17 @@ def mc_prop_simulation(proj: float, std: float, line: float, n_sims: int = 5000,
 
     Returns detailed simulation results.
     """
+    if proj == 0.0 and line > 0 and stat_type not in ("bogey_free",):
+        return {
+            "p_over": 0.5, "p_under": 0.5,
+            "p_over_by_engine": {"normal": 0.5, "t_dist": 0.5, "skew_adj": 0.5, "mean_revert": 0.5, "vol_cluster": 0.5},
+            "engine_agreement": 1.0,
+            "sim_mean": 0.0, "sim_std": 0.0,
+            "ci_80": (0.0, 0.0), "ci_50": (0.0, 0.0),
+            "n_sims": 0,
+            "data_invalid": True,
+            "warning": "Zero projection — player data not loaded or stat unsupported",
+        }
     rng = np.random.default_rng()
 
     # ── SPECIAL: Holes Played (cut/no-cut simulation) ──────────────
@@ -2933,6 +2944,63 @@ SG_TO_STAT_SENSITIVITY = {
 }
 
 
+def _resolve_pair_prop(player_name: str, proj_df, stat_type: str) -> dict | None:
+    """Detect and resolve pair/combo PrizePicks props (e.g. 'Player A + Player B').
+
+    Returns dict with combined projection, std, both player SG dicts, or None if not a pair.
+    """
+    for sep in (" + ", " & "):
+        if sep not in player_name:
+            continue
+        parts = [p.strip() for p in player_name.split(sep) if p.strip()]
+        if len(parts) != 2:
+            return {"is_pair": True, "valid": False, "warning": f"Could not parse pair: {player_name}"}
+
+        projs = []
+        stds = []
+        sg_dicts = []
+        missing = []
+        for pname in parts:
+            match = proj_df[proj_df["player"] == pname]
+            if match.empty:
+                for _, row in proj_df.iterrows():
+                    if pname.split()[-1].lower() in row["player"].lower():
+                        match = proj_df[proj_df["player"] == row["player"]]
+                        break
+            if match.empty:
+                missing.append(pname)
+                continue
+            p_row = match.iloc[0]
+            sg_proj = {
+                "sg_ott": p_row.get("sg_ott_adj", p_row["sg_ott"]),
+                "sg_app": p_row.get("sg_app_adj", p_row["sg_app"]),
+                "sg_arg": p_row.get("sg_arg_adj", p_row["sg_arg"]),
+                "sg_putt": p_row.get("sg_putt_adj", p_row["sg_putt"]),
+            }
+            pv, ps = project_pp_stat(stat_type, sg_proj)
+            projs.append(pv)
+            stds.append(ps)
+            sg_dicts.append(sg_proj)
+
+        if missing:
+            return {"is_pair": True, "valid": False, "missing": missing,
+                    "warning": f"Missing player data: {', '.join(missing)}"}
+
+        combined_proj = sum(projs)
+        combined_std = round(math.sqrt(sum(s ** 2 for s in stds)), 2)
+        combined_sg = sum(
+            sum(d.get(k, 0) for d in sg_dicts) for k in ["sg_ott", "sg_app", "sg_arg", "sg_putt"]
+        )
+        return {
+            "is_pair": True, "valid": True,
+            "proj": round(combined_proj, 2), "std": combined_std,
+            "player_sg": combined_sg,
+            "players": parts,
+        }
+
+    return None
+
+
 def project_pp_stat(stat_type: str, player_proj: dict) -> tuple:
     """Project a PrizePicks stat line for a player.
 
@@ -3224,6 +3292,47 @@ _PLAYER_SG_BASELINES = {
     "J.T. Poston":         {"sg_ott": 0.10, "sg_app": 0.30, "sg_arg": 0.20, "sg_putt": 0.25, "events": 26},
     "Tiger Woods":         {"sg_ott": 0.30, "sg_app": 0.40, "sg_arg": 0.20, "sg_putt": 0.10, "events": 5},
     "Matthieu Pavon":      {"sg_ott": 0.40, "sg_app": 0.55, "sg_arg": 0.10, "sg_putt": 0.00, "events": 19},
+    # Additional players for broader field coverage (Zurich Classic, Byron Nelson, etc.)
+    "Haotong Li":          {"sg_ott": 0.30, "sg_app": 0.35, "sg_arg": 0.10, "sg_putt": 0.05, "events": 18},
+    "Hao-Tong Li":         {"sg_ott": 0.30, "sg_app": 0.35, "sg_arg": 0.10, "sg_putt": 0.05, "events": 18},
+    "Jordan Smith":        {"sg_ott": 0.25, "sg_app": 0.40, "sg_arg": 0.10, "sg_putt": 0.05, "events": 17},
+    "Michael Brennan":     {"sg_ott": 0.20, "sg_app": 0.25, "sg_arg": 0.10, "sg_putt": 0.05, "events": 14},
+    "Johnny Keefer":       {"sg_ott": 0.15, "sg_app": 0.20, "sg_arg": 0.10, "sg_putt": 0.10, "events": 10},
+    "Ben Griffin":         {"sg_ott": 0.30, "sg_app": 0.35, "sg_arg": 0.10, "sg_putt": 0.10, "events": 22},
+    "Andrew Novak":        {"sg_ott": 0.20, "sg_app": 0.30, "sg_arg": 0.15, "sg_putt": 0.05, "events": 20},
+    "Lanto Griffin":       {"sg_ott": 0.35, "sg_app": 0.25, "sg_arg": 0.10, "sg_putt": 0.00, "events": 22},
+    "Alex Fitzpatrick":    {"sg_ott": 0.15, "sg_app": 0.20, "sg_arg": 0.10, "sg_putt": 0.05, "events": 12},
+    "Chan Kim":            {"sg_ott": 0.50, "sg_app": 0.15, "sg_arg": 0.00, "sg_putt": -0.05, "events": 15},
+    "Blades Brown":        {"sg_ott": 0.25, "sg_app": 0.25, "sg_arg": 0.10, "sg_putt": 0.10, "events": 8},
+    "Dan Brown":           {"sg_ott": 0.20, "sg_app": 0.30, "sg_arg": 0.10, "sg_putt": 0.05, "events": 14},
+    "Jesper Svensson":     {"sg_ott": 0.15, "sg_app": 0.20, "sg_arg": 0.10, "sg_putt": 0.05, "events": 10},
+    "Adam Svensson":       {"sg_ott": 0.20, "sg_app": 0.30, "sg_arg": 0.05, "sg_putt": 0.05, "events": 20},
+    "Ryan Palmer":         {"sg_ott": 0.20, "sg_app": 0.30, "sg_arg": 0.15, "sg_putt": 0.10, "events": 22},
+    "Luke Clanton":        {"sg_ott": 0.35, "sg_app": 0.40, "sg_arg": 0.10, "sg_putt": 0.10, "events": 10},
+    "Cam Davis":           {"sg_ott": 0.40, "sg_app": 0.30, "sg_arg": 0.10, "sg_putt": 0.00, "events": 22},
+    "Keith Mitchell":      {"sg_ott": 0.55, "sg_app": 0.25, "sg_arg": 0.00, "sg_putt": -0.05, "events": 24},
+    "Lee Hodges":          {"sg_ott": 0.30, "sg_app": 0.35, "sg_arg": 0.15, "sg_putt": 0.10, "events": 24},
+    "Joel Dahmen":         {"sg_ott": 0.20, "sg_app": 0.30, "sg_arg": 0.15, "sg_putt": 0.10, "events": 25},
+    "Seamus Power":        {"sg_ott": 0.25, "sg_app": 0.40, "sg_arg": 0.15, "sg_putt": 0.10, "events": 22},
+    "Luke List":           {"sg_ott": 0.55, "sg_app": 0.20, "sg_arg": 0.00, "sg_putt": -0.05, "events": 24},
+    "Garrick Higgo":       {"sg_ott": 0.40, "sg_app": 0.35, "sg_arg": 0.05, "sg_putt": 0.00, "events": 18},
+    "Erik van Rooyen":     {"sg_ott": 0.30, "sg_app": 0.35, "sg_arg": 0.10, "sg_putt": 0.05, "events": 20},
+    "Matt McCarty":        {"sg_ott": 0.25, "sg_app": 0.30, "sg_arg": 0.10, "sg_putt": 0.10, "events": 16},
+    "Mac Meissner":        {"sg_ott": 0.30, "sg_app": 0.30, "sg_arg": 0.10, "sg_putt": 0.05, "events": 14},
+    "Beau Hossler":        {"sg_ott": 0.30, "sg_app": 0.30, "sg_arg": 0.10, "sg_putt": 0.05, "events": 24},
+    "Sam Ryder":           {"sg_ott": 0.25, "sg_app": 0.30, "sg_arg": 0.10, "sg_putt": 0.10, "events": 24},
+    "David Lipsky":        {"sg_ott": 0.15, "sg_app": 0.35, "sg_arg": 0.15, "sg_putt": 0.10, "events": 20},
+    "Karl Vilips":         {"sg_ott": 0.30, "sg_app": 0.25, "sg_arg": 0.10, "sg_putt": 0.05, "events": 12},
+    "Patton Kizzire":      {"sg_ott": 0.20, "sg_app": 0.30, "sg_arg": 0.15, "sg_putt": 0.10, "events": 24},
+    "Max McGreevy":        {"sg_ott": 0.25, "sg_app": 0.25, "sg_arg": 0.10, "sg_putt": 0.05, "events": 20},
+    "Max Greyserman":      {"sg_ott": 0.25, "sg_app": 0.30, "sg_arg": 0.10, "sg_putt": 0.05, "events": 18},
+    "Christo Lamprecht":   {"sg_ott": 0.40, "sg_app": 0.20, "sg_arg": 0.05, "sg_putt": 0.00, "events": 12},
+    "Neal Shipley":        {"sg_ott": 0.25, "sg_app": 0.25, "sg_arg": 0.10, "sg_putt": 0.05, "events": 10},
+    "Matt Kuchar":         {"sg_ott": 0.10, "sg_app": 0.30, "sg_arg": 0.20, "sg_putt": 0.15, "events": 20},
+    "Adam Schenk":         {"sg_ott": 0.20, "sg_app": 0.30, "sg_arg": 0.10, "sg_putt": 0.10, "events": 24},
+    "Doug Ghim":           {"sg_ott": 0.25, "sg_app": 0.30, "sg_arg": 0.10, "sg_putt": 0.05, "events": 22},
+    "Takumi Kanaya":       {"sg_ott": 0.20, "sg_app": 0.35, "sg_arg": 0.10, "sg_putt": 0.05, "events": 16},
+    "Hayden Springer":     {"sg_ott": 0.40, "sg_app": 0.25, "sg_arg": 0.05, "sg_putt": 0.00, "events": 18},
 }
 
 _PLAYER_SG_INDEX = {k.lower(): v for k, v in _PLAYER_SG_BASELINES.items()}
@@ -3244,20 +3353,31 @@ def _lookup_player_sg(name: str) -> dict | None:
 def _estimate_sg_from_odds_rank(rank_idx: int, field_size: int, odds: int = 0) -> tuple:
     """Estimate SG components from field position or odds when no baseline available.
 
+    Uses a log-normal-inspired curve: SG drops steeply for top players, then
+    flattens through the middle of the field, then drops again at the bottom.
+    PGA Tour field SG distribution: top ~+2.5, median ~+0.3, bottom ~-0.8.
+
     Returns (sg_ott, sg_app, sg_arg, sg_putt, events).
     """
     if odds and odds > 0:
         implied = 100.0 / (odds + 100)
-        est_total = max(-0.5, min(2.0, (implied - 0.01) * 25))
+        est_total = max(-0.8, min(2.5, (implied - 0.005) * 30))
     else:
-        frac = 1.0 - (rank_idx / max(1, field_size - 1))
-        est_total = 1.5 * frac - 0.3
+        frac = rank_idx / max(1, field_size - 1)  # 0 = best, 1 = worst
+        if frac < 0.10:
+            est_total = 2.0 - frac * 8.0  # top 10%: 2.0 → 1.2
+        elif frac < 0.35:
+            est_total = 1.2 - (frac - 0.10) * 3.2  # next 25%: 1.2 → 0.4
+        elif frac < 0.65:
+            est_total = 0.4 - (frac - 0.35) * 1.33  # middle 30%: 0.4 → 0.0
+        else:
+            est_total = 0.0 - (frac - 0.65) * 2.3  # bottom 35%: 0.0 → -0.8
 
-    sg_ott = round(est_total * 0.25, 2)
-    sg_app = round(est_total * 0.35, 2)
-    sg_arg = round(est_total * 0.18, 2)
-    sg_putt = round(est_total * 0.22, 2)
-    events = 20
+    sg_ott = round(est_total * 0.27, 2)
+    sg_app = round(est_total * 0.33, 2)
+    sg_arg = round(est_total * 0.20, 2)
+    sg_putt = round(est_total * 0.20, 2)
+    events = 12  # lower confidence for estimated players
     return sg_ott, sg_app, sg_arg, sg_putt, events
 
 
@@ -3291,7 +3411,9 @@ def _generate_sample_players(n: int = 30, course: str = "Augusta National") -> p
             "sg_arg": sg_arg,
             "sg_putt": sg_putt,
             "events": events,
-            "odds": [600, 800, 1000, 1200, 1500, 2000, 2500, 3000, 4000, 5000, 6000, 8000, 10000][min(i, 12)],
+            "odds": [600, 800, 1000, 1200, 1500, 2000, 2500, 3000, 3500, 4000, 5000, 6000, 6500,
+                     7000, 8000, 9000, 10000, 11000, 12000, 13000, 14000, 15000, 16000, 18000,
+                     20000, 22000, 25000, 25000, 25000, 25000, 25000][min(i, 30)],
             "world_rank": i + 1,
         })
     return pd.DataFrame(rows)
@@ -4461,20 +4583,27 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
 
         # Quick projection preview — use course-adjusted SG components
         internal_stat = pp_internal_map.get(leg_stat, "strokes")
-        player_match = proj_df[proj_df["player"] == leg_player]
-        if not player_match.empty:
-            p_row = player_match.iloc[0]
-            # Use course-adjusted SG values (sg_*_adj) for projections
-            sg_proj_dict = {
-                "sg_ott": p_row.get("sg_ott_adj", p_row["sg_ott"]),
-                "sg_app": p_row.get("sg_app_adj", p_row["sg_app"]),
-                "sg_arg": p_row.get("sg_arg_adj", p_row["sg_arg"]),
-                "sg_putt": p_row.get("sg_putt_adj", p_row["sg_putt"]),
-            }
-            pv, ps = project_pp_stat(internal_stat, sg_proj_dict)
+        _pair = _resolve_pair_prop(leg_player, proj_df, internal_stat)
+        if _pair is not None and _pair.get("valid"):
+            pv, ps = _pair["proj"], _pair["std"]
             leg_prob = prob_over(pv, leg_line, ps) if leg_side == "OVER" else prob_under(pv, leg_line, ps)
-        else:
+        elif _pair is not None and not _pair.get("valid"):
             pv, ps, leg_prob = 0.0, 1.0, 0.50
+            st.caption(f"Data incomplete for pair: {_pair.get('warning', '')}")
+        else:
+            player_match = proj_df[proj_df["player"] == leg_player]
+            if not player_match.empty:
+                p_row = player_match.iloc[0]
+                sg_proj_dict = {
+                    "sg_ott": p_row.get("sg_ott_adj", p_row["sg_ott"]),
+                    "sg_app": p_row.get("sg_app_adj", p_row["sg_app"]),
+                    "sg_arg": p_row.get("sg_arg_adj", p_row["sg_arg"]),
+                    "sg_putt": p_row.get("sg_putt_adj", p_row["sg_putt"]),
+                }
+                pv, ps = project_pp_stat(internal_stat, sg_proj_dict)
+                leg_prob = prob_over(pv, leg_line, ps) if leg_side == "OVER" else prob_under(pv, leg_line, ps)
+            else:
+                pv, ps, leg_prob = 0.0, 1.0, 0.50
 
         parlay_picks.append({
             "player": leg_player,
@@ -4665,13 +4794,20 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
                         "n_sims": 0,
                     }
 
+                if mc.get("data_invalid"):
+                    pk["data_error"] = True
+                    pk["warning"] = mc.get("warning", "Data invalid")
+                    pk["prob"] = 0.0
+                    pk["mc"] = mc
+                    mc_results.append(mc)
+                    continue
+
                 if pk["side"] == "OVER":
                     mc_prob = mc["p_over"]
                 else:
                     mc_prob = mc["p_under"]
 
                 # Blend MC prob with tournament sim cut probability
-                # Only apply to stats that depend on making the cut (full-tournament stats)
                 cut_dependent_stats = {"holes_played", "strokes", "fantasy_score"}
                 if pk.get("stat_internal") in cut_dependent_stats:
                     if pk.get("sim", {}).get("sim_ran") and pk["sim"].get("cut_prob", 0) > 0:
@@ -4679,6 +4815,8 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
                         mc_prob = mc_prob * (0.7 + 0.3 * cut_adj)
 
                 mc_prob = min(1.0, max(0.0, mc_prob))
+                if mc_prob > 0.97:
+                    pk["suspicious"] = True
                 pk["prob"] = mc_prob
                 pk["mc"] = mc
                 mc_results.append(mc)
@@ -4784,6 +4922,15 @@ def tab_prizepicks(proj_df: pd.DataFrame, settings: dict):
         # ════════════════════════════════════════════════════════
         # UNIFIED RESULTS DISPLAY
         # ════════════════════════════════════════════════════════
+        _has_data_errors = any(pk.get("data_error") for pk in parlay_picks)
+        _has_suspicious = any(pk.get("suspicious") for pk in parlay_picks)
+        if _has_data_errors:
+            st.error("DATA INTEGRITY FAILURE: One or more legs have missing/invalid projections (0.0). "
+                     "This is likely a pair/combo bet the model cannot project, or a player not in the database. "
+                     "DO NOT BET on data-error legs.")
+        if _has_suspicious:
+            st.warning("One or more legs show extreme probabilities (>97%). "
+                       "This often indicates a data problem rather than a genuine edge. Verify before betting.")
         st.markdown("## Unified Model Results")
 
         # ── Individual Leg Analysis ──
@@ -5351,34 +5498,50 @@ def tab_live_scanner(proj_df: pd.DataFrame, settings: dict):
                 stat_display = pp_line["stat_type"]
                 stat_type = pp_internal_map.get(stat_display, None)
                 if stat_type is None:
-                    # Unknown stat type — skip to avoid false projections
                     continue
                 line_val = pp_line["line"]
 
-                # Find player in projection model
-                player_match = proj_df[proj_df["player"] == player_name]
-                if player_match.empty:
-                    # Try fuzzy match
-                    for _, row in proj_df.iterrows():
-                        if player_name.split()[-1].lower() in row["player"].lower():
-                            player_match = proj_df[proj_df["player"] == row["player"]]
-                            break
+                # Check for pair/combo prop (e.g. "Player A + Player B")
+                pair_result = _resolve_pair_prop(player_name, proj_df, stat_type)
+                if pair_result is not None:
+                    if not pair_result.get("valid"):
+                        scan_results.append({
+                            "player": player_name, "stat": stat_display,
+                            "stat_internal": stat_type, "line": line_val,
+                            "projection": 0.0, "std": 0.0,
+                            "side": "N/A", "prob": 0.0,
+                            "p_over": 0.5, "p_under": 0.5,
+                            "edge": 0.0, "confidence": "DATA_ERROR",
+                            "engine_agreement": 0.0, "ci_80": (0.0, 0.0),
+                            "engines": {}, "sg_total": 0.0, "course_delta": 0.0,
+                            "warning": pair_result.get("warning", "Pair data incomplete"),
+                            "is_pair": True,
+                        })
+                        continue
+                    proj_val = pair_result["proj"]
+                    proj_std = pair_result["std"]
+                    player_sg_total = pair_result["player_sg"]
+                else:
+                    # Single player lookup
+                    player_match = proj_df[proj_df["player"] == player_name]
+                    if player_match.empty:
+                        for _, row in proj_df.iterrows():
+                            if player_name.split()[-1].lower() in row["player"].lower():
+                                player_match = proj_df[proj_df["player"] == row["player"]]
+                                break
 
-                if player_match.empty:
-                    continue
+                    if player_match.empty:
+                        continue
 
-                p_row = player_match.iloc[0]
-                # Use course-adjusted SG values for projections
-                sg_proj = {
-                    "sg_ott": p_row.get("sg_ott_adj", p_row["sg_ott"]),
-                    "sg_app": p_row.get("sg_app_adj", p_row["sg_app"]),
-                    "sg_arg": p_row.get("sg_arg_adj", p_row["sg_arg"]),
-                    "sg_putt": p_row.get("sg_putt_adj", p_row["sg_putt"]),
-                }
-                player_sg_total = float(p_row.get("sg_regressed", sum(sg_proj.values())))
-
-                # Project stat
-                proj_val, proj_std = project_pp_stat(stat_type, sg_proj)
+                    p_row = player_match.iloc[0]
+                    sg_proj = {
+                        "sg_ott": p_row.get("sg_ott_adj", p_row["sg_ott"]),
+                        "sg_app": p_row.get("sg_app_adj", p_row["sg_app"]),
+                        "sg_arg": p_row.get("sg_arg_adj", p_row["sg_arg"]),
+                        "sg_putt": p_row.get("sg_putt_adj", p_row["sg_putt"]),
+                    }
+                    player_sg_total = float(p_row.get("sg_regressed", sum(sg_proj.values())))
+                    proj_val, proj_std = project_pp_stat(stat_type, sg_proj)
 
                 # Build extra kwargs for special stat types
                 mc_kwargs = {"stat_type": stat_type, "player_sg": player_sg_total}
@@ -5399,6 +5562,22 @@ def tab_live_scanner(proj_df: pd.DataFrame, settings: dict):
                 # Run MC simulation (2000x per engine, 10K total across 5 engines)
                 mc = mc_prop_simulation(proj_val, proj_std, line_val, n_sims=2000, **mc_kwargs)
 
+                if mc.get("data_invalid"):
+                    scan_results.append({
+                        "player": player_name, "stat": stat_display,
+                        "stat_internal": stat_type, "line": line_val,
+                        "projection": proj_val, "std": proj_std,
+                        "side": "N/A", "prob": 0.0,
+                        "p_over": 0.5, "p_under": 0.5,
+                        "edge": 0.0, "confidence": "DATA_ERROR",
+                        "engine_agreement": 0.0, "ci_80": (0.0, 0.0),
+                        "engines": mc.get("p_over_by_engine", {}),
+                        "sg_total": player_sg_total, "course_delta": 0.0,
+                        "warning": mc.get("warning", "Data invalid"),
+                        "is_pair": pair_result is not None,
+                    })
+                    continue
+
                 p_over = mc["p_over"]
                 p_under = mc["p_under"]
                 best_side = "OVER" if p_over > p_under else "UNDER"
@@ -5408,8 +5587,10 @@ def tab_live_scanner(proj_df: pd.DataFrame, settings: dict):
                 pp_be = 1.0 / pp_decimal_odds
                 edge = best_prob - pp_be
 
-                # Confidence classification
-                if edge > 0.08 and mc["engine_agreement"] > 0.90:
+                # Sanity checks: extreme probabilities or edges signal data problems
+                if best_prob > 0.97 or edge > 0.35:
+                    conf = "SUSPICIOUS"
+                elif edge > 0.08 and mc["engine_agreement"] > 0.90:
                     conf = "HIGH"
                 elif edge > 0.05:
                     conf = "MEDIUM"
@@ -5418,7 +5599,13 @@ def tab_live_scanner(proj_df: pd.DataFrame, settings: dict):
                 else:
                     conf = "NO_BET"
 
-                scan_results.append({
+                _course_d = 0.0
+                _sg_t = player_sg_total
+                if pair_result is None and not player_match.empty:
+                    _course_d = float(p_row.get("course_delta", 0))
+                    _sg_t = float(p_row.get("sg_regressed", player_sg_total))
+
+                result_entry = {
                     "player": player_name,
                     "stat": stat_display,
                     "stat_internal": stat_type,
@@ -5434,9 +5621,13 @@ def tab_live_scanner(proj_df: pd.DataFrame, settings: dict):
                     "engine_agreement": mc["engine_agreement"],
                     "ci_80": mc["ci_80"],
                     "engines": mc["p_over_by_engine"],
-                    "sg_total": p_row.get("sg_regressed", 0),
-                    "course_delta": p_row.get("course_delta", 0),
-                })
+                    "sg_total": _sg_t,
+                    "course_delta": _course_d,
+                    "is_pair": pair_result is not None,
+                }
+                if conf == "SUSPICIOUS":
+                    result_entry["warning"] = f"Extreme probability ({best_prob*100:.0f}%) or edge ({edge*100:.0f}%) — verify data"
+                scan_results.append(result_entry)
 
             progress.empty()
 
@@ -5449,8 +5640,20 @@ def tab_live_scanner(proj_df: pd.DataFrame, settings: dict):
         # Display results
         st.markdown(f"**Scanned {len(scan_results)} props — sorted by edge**")
 
+        # Show data errors/warnings
+        data_errors = [s for s in scan_results if s["confidence"] in ("DATA_ERROR", "SUSPICIOUS")]
+        if data_errors:
+            n_err = sum(1 for s in data_errors if s["confidence"] == "DATA_ERROR")
+            n_sus = sum(1 for s in data_errors if s["confidence"] == "SUSPICIOUS")
+            parts = []
+            if n_err:
+                parts.append(f"{n_err} props with missing/invalid data (pair bets or unmatched players)")
+            if n_sus:
+                parts.append(f"{n_sus} props with suspicious probabilities (verify before betting)")
+            st.warning(" | ".join(parts))
+
         # Summary metrics
-        bettable = [s for s in scan_results if s["confidence"] != "NO_BET"]
+        bettable = [s for s in scan_results if s["confidence"] not in ("NO_BET", "DATA_ERROR", "SUSPICIOUS")]
         high_conf = [s for s in scan_results if s["confidence"] == "HIGH"]
 
         mcols = st.columns(4)
@@ -5469,7 +5672,7 @@ def tab_live_scanner(proj_df: pd.DataFrame, settings: dict):
         # Filters
         fcol1, fcol2 = st.columns(2)
         with fcol1:
-            conf_filter = st.selectbox("Filter Confidence", ["All", "HIGH", "MEDIUM", "LOW"], key="scan_conf_filter")
+            conf_filter = st.selectbox("Filter Confidence", ["All", "HIGH", "MEDIUM", "LOW", "DATA_ERROR", "SUSPICIOUS"], key="scan_conf_filter")
         with fcol2:
             side_filter = st.selectbox("Filter Side", ["All", "OVER", "UNDER"], key="scan_side_filter")
 
@@ -5512,6 +5715,8 @@ def tab_live_scanner(proj_df: pd.DataFrame, settings: dict):
                 if val == "HIGH": return "color: #4ade80; font-weight: bold"
                 if val == "MEDIUM": return "color: #fbbf24"
                 if val == "LOW": return "color: #fb923c"
+                if val == "DATA_ERROR": return "color: #ff0000; font-weight: bold"
+                if val == "SUSPICIOUS": return "color: #ff6600; font-weight: bold"
                 return "color: #f87171"
 
             styled = scan_df.style.map(color_edge, subset=["Edge"]).map(color_conf, subset=["Conf"])
@@ -7268,6 +7473,7 @@ def main():
             rows = []
             n = len(espn_players)
             matched_count = 0
+            odds_matched = 0
             for i, pl in enumerate(espn_players):
                 name = pl["name"]
                 sg_data = _lookup_player_sg(name)
@@ -7286,8 +7492,18 @@ def main():
                         if last_name and last_name in oname:
                             player_odds = oprice
                             break
-                if not player_odds:
-                    player_odds = int(500 + i * 300)
+                if player_odds:
+                    odds_matched += 1
+                else:
+                    frac = i / max(n - 1, 1)
+                    if frac < 0.05:
+                        player_odds = int(500 + frac * 6000)
+                    elif frac < 0.20:
+                        player_odds = int(800 + (frac - 0.05) * 15000)
+                    elif frac < 0.50:
+                        player_odds = int(3000 + (frac - 0.20) * 10000)
+                    else:
+                        player_odds = int(6000 + (frac - 0.50) * 30000)
 
                 rows.append({
                     "player": name,
@@ -7304,8 +7520,14 @@ def main():
             if matched_count < n:
                 st.info(f"SG baseline: {matched_count}/{n} matched. "
                         f"Use Advanced > Override SG Data for full precision.")
+            if odds_matched == 0 and n > 0:
+                st.warning("No live odds available — using estimated odds based on field position. "
+                           "Edge and Kelly calculations may be unreliable. Add an Odds API key in Settings.")
+            elif odds_matched < n // 2:
+                st.info(f"Odds: {odds_matched}/{n} players matched. Remaining use estimated odds.")
         else:
-            # No ESPN data available — use baseline field (top 30 PGA players)
+            st.warning("ESPN field data unavailable — using baseline sample field. "
+                       "Data may not reflect the current tournament.")
             raw_df = _generate_sample_players(30, settings["course"])
 
         # Fetch PrizePicks lines
