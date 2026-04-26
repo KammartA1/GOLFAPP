@@ -576,6 +576,16 @@ hr { border-color: rgba(255,255,255,0.06) !important; }
 </style>
 """, unsafe_allow_html=True)
 
+# ─── KEEPALIVE: prevent Streamlit Cloud from sleeping ─────────
+st.markdown("""<script>
+(function(){
+  if(window._keepAlive) clearInterval(window._keepAlive);
+  window._keepAlive = setInterval(function(){
+    try { fetch(window.location.href, {method:'HEAD', cache:'no-store'}); }
+    catch(e){}
+  }, 45000);
+})();
+</script>""", unsafe_allow_html=True)
 
 # ============================================================
 # HELPER FUNCTIONS — Reusable UI components
