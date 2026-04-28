@@ -1147,19 +1147,75 @@ COURSE_PROFILES = {
         "elevation": 6, "par": 72,
         "notes": "Blue Monster — long, windy South Florida layout, water on 14 holes, Bermuda greens, rewards length and ball-striking",
     },
-    "TPC Potomac": {
-        "sg_weights": {"sg_ott": 0.20, "sg_app": 0.28, "sg_arg": 0.20, "sg_putt": 0.32},
-        "distance_bonus": 0.03, "accuracy_penalty": -0.05,
-        "bermuda_greens": False, "wind_sensitivity": 0.25,
-        "elevation": 200, "par": 70,
-        "notes": "Tight tree-lined layout, accuracy premium, small bentgrass greens, rewards precision",
+    "Grand Reserve GC": {
+        "sg_weights": {"sg_ott": 0.22, "sg_app": 0.26, "sg_arg": 0.20, "sg_putt": 0.32},
+        "distance_bonus": 0.05, "accuracy_penalty": -0.04,
+        "bermuda_greens": True, "wind_sensitivity": 0.50,
+        "elevation": 20, "par": 72,
+        "notes": "Puerto Rico Open venue, coastal trade winds, Bermuda greens, medium-length layout, wind management key",
     },
-    "Wilmington CC": {
+    "Dunes Golf & Beach Club": {
+        "sg_weights": {"sg_ott": 0.20, "sg_app": 0.28, "sg_arg": 0.20, "sg_putt": 0.32},
+        "distance_bonus": 0.04, "accuracy_penalty": -0.04,
+        "bermuda_greens": True, "wind_sensitivity": 0.45,
+        "elevation": 15, "par": 72,
+        "notes": "Myrtle Beach Classic, Robert Trent Jones design, coastal winds, Bermuda/paspalum greens",
+    },
+    "Hurstbourne CC": {
+        "sg_weights": {"sg_ott": 0.20, "sg_app": 0.28, "sg_arg": 0.20, "sg_putt": 0.32},
+        "distance_bonus": 0.04, "accuracy_penalty": -0.04,
+        "bermuda_greens": False, "wind_sensitivity": 0.25,
+        "elevation": 700, "par": 72,
+        "notes": "ISCO Championship, classic Kentucky layout, bentgrass, moderate length, balanced profile",
+    },
+    "Corales Golf Course": {
+        "sg_weights": {"sg_ott": 0.22, "sg_app": 0.26, "sg_arg": 0.20, "sg_putt": 0.32},
+        "distance_bonus": 0.05, "accuracy_penalty": -0.05,
+        "bermuda_greens": True, "wind_sensitivity": 0.55,
+        "elevation": 10, "par": 72,
+        "notes": "Corales Puntacana, Caribbean coastal winds, clifftop holes, paspalum greens, wind dominates",
+    },
+    "Black Desert Resort": {
+        "sg_weights": {"sg_ott": 0.22, "sg_app": 0.26, "sg_arg": 0.20, "sg_putt": 0.32},
+        "distance_bonus": 0.05, "accuracy_penalty": -0.03,
+        "bermuda_greens": False, "wind_sensitivity": 0.35,
+        "elevation": 3000, "par": 72,
+        "notes": "Utah desert links, high elevation, thin air adds distance, bentgrass, wide fairways",
+    },
+    "Yokohama CC": {
+        "sg_weights": {"sg_ott": 0.18, "sg_app": 0.30, "sg_arg": 0.20, "sg_putt": 0.32},
+        "distance_bonus": 0.02, "accuracy_penalty": -0.06,
+        "bermuda_greens": False, "wind_sensitivity": 0.30,
+        "elevation": 200, "par": 70,
+        "notes": "Baycurrent Classic, tight Japanese parkland, small greens, accuracy premium, korai/bentgrass mix",
+    },
+    "Walnut Cove": {
         "sg_weights": {"sg_ott": 0.22, "sg_app": 0.28, "sg_arg": 0.18, "sg_putt": 0.32},
         "distance_bonus": 0.05, "accuracy_penalty": -0.04,
-        "bermuda_greens": False, "wind_sensitivity": 0.30,
-        "elevation": 300, "par": 71,
-        "notes": "Classic northeast layout, tree-lined fairways, undulating bentgrass greens, balanced SG profile",
+        "bermuda_greens": False, "wind_sensitivity": 0.25,
+        "elevation": 2500, "par": 72,
+        "notes": "Biltmore Championship, mountain elevation, Fazio design, bentgrass, elevation gain on approach",
+    },
+    "Omni Barton Creek": {
+        "sg_weights": {"sg_ott": 0.22, "sg_app": 0.28, "sg_arg": 0.18, "sg_putt": 0.32},
+        "distance_bonus": 0.05, "accuracy_penalty": -0.04,
+        "bermuda_greens": True, "wind_sensitivity": 0.30,
+        "elevation": 900, "par": 72,
+        "notes": "Good Good Championship, Fazio Canyons course, Texas Hill Country, Bermuda, mid-elevation",
+    },
+    "Medinah CC": {
+        "sg_weights": {"sg_ott": 0.22, "sg_app": 0.30, "sg_arg": 0.18, "sg_putt": 0.30},
+        "distance_bonus": 0.06, "accuracy_penalty": -0.05,
+        "bermuda_greens": False, "wind_sensitivity": 0.25,
+        "elevation": 750, "par": 72,
+        "notes": "Presidents Cup venue, No. 3 course, tree-lined parkland, long and demanding, bentgrass",
+    },
+    "Spyglass Hill": {
+        "sg_weights": {"sg_ott": 0.22, "sg_app": 0.30, "sg_arg": 0.20, "sg_putt": 0.28},
+        "distance_bonus": 0.05, "accuracy_penalty": -0.05,
+        "bermuda_greens": False, "wind_sensitivity": 0.45,
+        "elevation": 100, "par": 72,
+        "notes": "AT&T Pebble Beach rotation course, coastal pines, tight tree-lined back 9, poa annua greens",
     },
 }
 
@@ -1983,6 +2039,38 @@ def fetch_espn_pga_field() -> dict:
     }
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_pgatour_schedule_current() -> dict:
+    """Scrape the current tournament from ESPN's golf schedule API.
+
+    Tries ESPN scoreboard with a date range covering this week.
+    Returns dict with 'event_name', 'course_name', 'status' or empty dict.
+    """
+    from datetime import datetime, timedelta
+    today = datetime.now()
+    start = (today - timedelta(days=today.weekday())).strftime("%Y%m%d")
+    end = (today + timedelta(days=6 - today.weekday())).strftime("%Y%m%d")
+    try:
+        r = requests.get(
+            f"https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard?dates={start}-{end}",
+            timeout=15,
+        )
+        if not r.ok:
+            return {}
+        events = r.json().get("events", [])
+        for e in events:
+            name = e.get("name", "")
+            status = e.get("status", {}).get("type", {}).get("description", "")
+            comps = e.get("competitions", [{}])
+            venue = comps[0].get("venue", {}) if comps else {}
+            course = venue.get("fullName", "") or venue.get("shortName", "")
+            if name:
+                return {"event_name": name, "course_name": course, "status": status}
+    except Exception:
+        pass
+    return {}
+
+
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_odds_api_golf_odds(api_key: str) -> dict:
     """Fetch golf outright odds from The Odds API.
@@ -2239,8 +2327,16 @@ COURSE_COORDS = {
     "Valhalla": (38.253, -85.520),
     "Southern Hills": (36.115, -95.959),
     "Trump National Doral": (25.812, -80.339),
-    "TPC Potomac": (39.004, -77.167),
-    "Wilmington CC": (39.773, -75.576),
+    "Grand Reserve GC": (18.371, -65.744),
+    "Dunes Golf & Beach Club": (33.778, -78.793),
+    "Hurstbourne CC": (38.268, -85.568),
+    "Corales Golf Course": (18.504, -68.368),
+    "Black Desert Resort": (37.120, -113.580),
+    "Yokohama CC": (35.413, 139.605),
+    "Walnut Cove": (35.460, -82.620),
+    "Omni Barton Creek": (30.310, -97.870),
+    "Medinah CC": (41.972, -88.032),
+    "Spyglass Hill": (36.582, -121.950),
 }
 
 
@@ -3752,96 +3848,98 @@ def _get_next_week_tournaments() -> list:
 
 # ── ESPN event name -> course key mapping ─────────────────
 TOURNAMENT_TO_COURSE = {
-    "Valspar Championship": "Innisbrook Copperhead",
+    # ── Signature Events ──
+    "The Sentry": "Kapalua Plantation",
+    "AT&T Pebble Beach Pro-Am": "Pebble Beach",
+    "The Genesis Invitational": "Riviera CC",
+    "Genesis Invitational": "Riviera CC",
+    "Arnold Palmer Invitational": "Bay Hill",
+    "Arnold Palmer Invitational presented by Mastercard": "Bay Hill",
     "THE PLAYERS Championship": "TPC Sawgrass",
     "The Players Championship": "TPC Sawgrass",
-    "Arnold Palmer Invitational": "Bay Hill",
-    "The Masters": "Augusta National",
-    "Masters Tournament": "Augusta National",
     "RBC Heritage": "Harbour Town",
-    "PGA Championship": "Aronimink GC",
-    "U.S. Open": "Shinnecock Hills",
-    "The Open Championship": "Royal Birkdale",
-    "Farmers Insurance Open": "Torrey Pines South",
-    "WM Phoenix Open": "TPC Scottsdale",
-    "Genesis Invitational": "Riviera CC",
-    "The Sentry": "Kapalua Plantation",
-    "Sony Open": "Waialae CC",
-    "AT&T Pebble Beach Pro-Am": "Pebble Beach",
-    "WGC-Dell Match Play": "Austin CC",
-    "Valero Texas Open": "TPC San Antonio",
-    "Wells Fargo Championship": "Quail Hollow",
-    "Charles Schwab Challenge": "Colonial CC",
     "the Memorial Tournament": "Muirfield Village",
     "Memorial Tournament": "Muirfield Village",
-    "Travelers Championship": "TPC River Highlands",
-    "Wyndham Championship": "Sedgefield CC",
-    "FedEx St. Jude Championship": "TPC Southwind",
-    "BMW Championship": "Bellerive CC",
-    "TOUR Championship": "East Lake",
+    "the Memorial Tournament pres. by Workday": "Muirfield Village",
+    "Cadillac Championship": "Trump National Doral",
+    "WGC-Cadillac Championship": "Trump National Doral",
+    "World Golf Championships-Cadillac Championship": "Trump National Doral",
+    "Miami Championship": "Trump National Doral",
+    "Truist Championship": "Quail Hollow",
+    # ── Majors ──
+    "The Masters": "Augusta National",
+    "Masters Tournament": "Augusta National",
+    "PGA Championship": "Aronimink GC",
+    "U.S. Open": "Shinnecock Hills",
+    "US Open": "Shinnecock Hills",
+    "The Open Championship": "Royal Birkdale",
+    "The Open": "Royal Birkdale",
+    # ── Regular Season (chronological) ──
+    "Sony Open in Hawaii": "Waialae CC",
+    "Sony Open": "Waialae CC",
+    "The American Express": "PGA West Stadium",
+    "American Express": "PGA West Stadium",
+    "Farmers Insurance Open": "Torrey Pines South",
+    "WM Phoenix Open": "TPC Scottsdale",
+    "Waste Management Phoenix Open": "TPC Scottsdale",
     "Cognizant Classic": "PGA National",
+    "Cognizant Classic in The Palm Beaches": "PGA National",
+    "Puerto Rico Open": "Grand Reserve GC",
+    "Valspar Championship": "Innisbrook Copperhead",
     "Texas Children's Houston Open": "Memorial Park GC",
     "Houston Open": "Memorial Park GC",
-    "The Sentry": "Kapalua Plantation",
-    "The American Express": "PGA West Stadium",
-    "Mexico Open": "Vidanta Vallarta",
-    "Mexico Open at Vidanta": "Vidanta Vallarta",
+    "Valero Texas Open": "TPC San Antonio",
     "Zurich Classic": "TPC Louisiana",
     "Zurich Classic of New Orleans": "TPC Louisiana",
     "THE CJ CUP Byron Nelson": "TPC Craig Ranch",
     "CJ CUP Byron Nelson": "TPC Craig Ranch",
-    "3M Open": "TPC Twin Cities",
+    "ONEflight Myrtle Beach Classic": "Dunes Golf & Beach Club",
+    "Myrtle Beach Classic": "Dunes Golf & Beach Club",
+    "Wells Fargo Championship": "Quail Hollow",
+    "Charles Schwab Challenge": "Colonial CC",
+    "RBC Canadian Open": "TPC Toronto",
+    "Travelers Championship": "TPC River Highlands",
     "John Deere Classic": "TPC Deere Run",
     "Genesis Scottish Open": "Renaissance Club",
+    "ISCO Championship": "Hurstbourne CC",
+    "Corales Puntacana Championship": "Corales Golf Course",
+    "3M Open": "TPC Twin Cities",
+    "Rocket Classic": "Detroit GC",
     "Rocket Mortgage Classic": "Detroit GC",
-    "Sanderson Farms Championship": "CC of Jackson",
-    "Shriners Children's Open": "TPC Summerlin",
+    "Wyndham Championship": "Sedgefield CC",
+    # ── FedExCup Playoffs ──
+    "FedEx St. Jude Championship": "TPC Southwind",
+    "BMW Championship": "Bellerive CC",
+    "TOUR Championship": "East Lake",
+    # ── Fall Series ──
+    "Biltmore Championship Asheville": "Walnut Cove",
+    "Biltmore Championship": "Walnut Cove",
+    "Presidents Cup": "Medinah CC",
+    "Bank of Utah Championship": "Black Desert Resort",
+    "Black Desert Championship": "Black Desert Resort",
+    "Baycurrent Classic": "Yokohama CC",
     "ZOZO Championship": "Accordia Golf",
-    "World Wide Technology Championship": "El Cardonal",
-    "Bermuda Championship": "Port Royal",
     "Butterfield Bermuda Championship": "Port Royal",
+    "Bermuda Championship": "Port Royal",
+    "VidantaWorld Mexico Open": "Vidanta Vallarta",
+    "Mexico Open": "Vidanta Vallarta",
+    "Mexico Open at Vidanta": "Vidanta Vallarta",
+    "World Wide Technology Championship": "El Cardonal",
+    "Good Good Championship": "Omni Barton Creek",
     "RSM Classic": "Sea Island",
     "The RSM Classic": "Sea Island",
     "Hero World Challenge": "Albany GC",
-    "RBC Canadian Open": "TPC Toronto",
-    "Presidents Cup": "Royal Montreal",
-    "Cadillac Championship": "Trump National Doral",
-    "WGC-Cadillac Championship": "Trump National Doral",
-    "World Golf Championships-Cadillac Championship": "Trump National Doral",
-    "LIV Golf Miami": "Trump National Doral",
-    "Cognizant Classic in The Palm Beaches": "PGA National",
-    "Valspar Championship": "Innisbrook Copperhead",
-    "Myrtle Beach Classic": "TPC Myrtle Beach",
-    "ISCO Championship": "Keene Trace GC",
+    # ── Older/alternate names ──
+    "Sanderson Farms Championship": "CC of Jackson",
+    "Shriners Children's Open": "TPC Summerlin",
+    "WGC-Dell Match Play": "Austin CC",
     "Barracuda Championship": "Tahoe Mountain Club",
+    "LIV Golf Miami": "Trump National Doral",
 }
 
 
-def _auto_create_course_profile(venue_name: str) -> str:
-    """Create a generic course profile from an ESPN venue name.
-
-    Used when ESPN returns a venue we don't have in COURSE_PROFILES.
-    Returns the course key added to COURSE_PROFILES.
-    """
-    clean_name = venue_name.strip()
-    if not clean_name:
-        clean_name = "Unknown Course"
-    COURSE_PROFILES[clean_name] = {
-        "sg_weights": {"sg_ott": 0.22, "sg_app": 0.28, "sg_arg": 0.20, "sg_putt": 0.30},
-        "distance_bonus": 0.04, "accuracy_penalty": -0.03,
-        "bermuda_greens": False, "wind_sensitivity": 0.35,
-        "elevation": 300, "par": 72,
-        "notes": f"Auto-detected from ESPN — {clean_name}. Generic balanced profile.",
-    }
-    return clean_name
-
-
 def _resolve_espn_to_course(event_name: str, venue_name: str = "") -> str | None:
-    """Map an ESPN event name or venue to our COURSE_PROFILES key.
-
-    If no match is found but a venue_name is provided, auto-creates a generic
-    course profile so we never fall back to a wrong hardcoded schedule.
-    """
+    """Map an ESPN event name or venue to our COURSE_PROFILES key."""
     # Direct tournament name lookup
     if event_name in TOURNAMENT_TO_COURSE:
         return TOURNAMENT_TO_COURSE[event_name]
@@ -3906,8 +4004,6 @@ def _resolve_espn_to_course(event_name: str, venue_name: str = "") -> str | None
             if alias in venue_lower:
                 return ckey
 
-        return _auto_create_course_profile(venue_name)
-
     return None
 
 
@@ -3920,10 +4016,16 @@ def render_sidebar() -> dict:
         st.markdown(section_header("GOLF QUANT ENGINE", "&#9971;", "v3.0"), unsafe_allow_html=True)
         st.markdown("---")
 
-        # ── Current Week Tournaments ─────────────────────────
-        # Try ESPN live detection first for accurate tournament info
-        espn_tournament = None
-        espn_course = None
+        # ── Multi-source tournament detection ─────────────────
+        # Source 1: ESPN scoreboard API (live/scheduled events)
+        # Source 2: ESPN schedule API (date-range lookup)
+        # Source 3: Hardcoded schedule (last resort)
+        detected_tournament = None
+        detected_course = None
+        detected_status = None
+        n_players = 0
+
+        # Source 1: ESPN scoreboard
         existing_espn = st.session_state.get("espn_data")
         should_fetch = (
             "espn_data" not in st.session_state
@@ -3940,72 +4042,60 @@ def render_sidebar() -> dict:
 
         espn_data = st.session_state.get("espn_data")
         if espn_data and espn_data.get("event_name"):
-            espn_tournament = espn_data["event_name"]
-            # Map ESPN event name to our course key
-            espn_course = _resolve_espn_to_course(espn_tournament, espn_data.get("course_name", ""))
-            status_label = espn_data.get("status", "")
+            detected_tournament = espn_data["event_name"]
+            detected_course = _resolve_espn_to_course(
+                detected_tournament, espn_data.get("course_name", ""))
+            detected_status = espn_data.get("status", "")
             n_players = len(espn_data.get("players", []))
-            status_color = "#4ade80" if status_label == "In Progress" else "#fbbf24" if status_label == "Scheduled" else "#94a3b8"
+
+        # Source 2: ESPN schedule date-range (if Source 1 didn't resolve a course)
+        if detected_tournament and not detected_course:
+            try:
+                sched = fetch_pgatour_schedule_current()
+                if sched.get("event_name"):
+                    _s2_course = _resolve_espn_to_course(
+                        sched["event_name"], sched.get("course_name", ""))
+                    if _s2_course and _s2_course in COURSE_PROFILES:
+                        detected_course = _s2_course
+            except Exception:
+                pass
+
+        # Source 3: Hardcoded schedule fallback
+        this_week = _get_current_week_tournaments()
+        if not detected_tournament and this_week:
+            detected_tournament = this_week[0]["tournament"]
+            detected_course = this_week[0]["course"]
+            detected_status = "Scheduled"
+        elif not detected_course and this_week:
+            detected_course = this_week[0]["course"]
+
+        # Display live tournament card
+        if detected_tournament:
+            status_color = "#4ade80" if detected_status == "In Progress" else "#fbbf24" if detected_status == "Scheduled" else "#94a3b8"
+            _course_display = detected_course or "Resolving..."
             st.markdown(f"""
             <div class="glass-card" style="padding:12px;margin-bottom:8px;">
                 <div style="font-size:0.75rem;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;">Live Tournament</div>
-                <div style="font-size:0.95rem;font-weight:600;color:#e2e8f0;margin-top:4px;">{espn_tournament}</div>
+                <div style="font-size:0.95rem;font-weight:600;color:#e2e8f0;margin-top:4px;">{detected_tournament}</div>
+                <div style="font-size:0.80rem;color:#60a5fa;margin-top:4px;">{_course_display}</div>
                 <div style="display:flex;gap:10px;margin-top:6px;">
-                    <span style="font-size:0.72rem;color:{status_color};">{status_label}</span>
-                    <span style="font-size:0.72rem;color:#94a3b8;">{n_players} players</span>
+                    <span style="font-size:0.72rem;color:{status_color};">{detected_status}</span>
+                    {f'<span style="font-size:0.72rem;color:#94a3b8;">{n_players} players</span>' if n_players else ''}
                 </div>
             </div>
             """, unsafe_allow_html=True)
 
-        this_week = _get_current_week_tournaments()
-        if espn_course or this_week:
-            if espn_course and espn_course in COURSE_PROFILES:
-                quick_course = espn_course
-            elif this_week:
-                quick_course = this_week[0]["course"]
-            else:
-                quick_course = None
-
-            if not espn_course and this_week:
-                st.markdown("**This Week's Tournaments**")
-                week_options = []
-                for t in this_week:
-                    label = f"{t['tournament']} — {t['course']}"
-                    if t["tour"] == "Major":
-                        label += " ⭐"
-                    week_options.append((label, t["course"]))
-
-                selected_label = st.radio(
-                    "Quick Select",
-                    options=[label for label, _ in week_options],
-                    index=0,
-                    label_visibility="collapsed",
-                )
-                for label, crs in week_options:
-                    if label == selected_label:
-                        quick_course = crs
-                        break
-
-            st.markdown("---")
-            all_courses = sorted(COURSE_PROFILES.keys())
-            default_idx = all_courses.index(quick_course) if quick_course and quick_course in all_courses else 0
-            course = st.selectbox(
-                "All Courses (override)",
-                options=all_courses,
-                index=default_idx,
-            )
+        # Auto-select course (no manual dropdown needed)
+        if detected_course and detected_course in COURSE_PROFILES:
+            course = detected_course
+        elif this_week and this_week[0]["course"] in COURSE_PROFILES:
+            course = this_week[0]["course"]
         else:
-            st.markdown(
-                '<div style="font-size:0.8rem;color:#64748b;margin-bottom:8px;">'
-                'No PGA events scheduled this week</div>',
-                unsafe_allow_html=True,
-            )
-            course = st.selectbox(
-                "Tournament Course",
-                options=sorted(COURSE_PROFILES.keys()),
-                index=sorted(COURSE_PROFILES.keys()).index("Augusta National")
-                if "Augusta National" in COURSE_PROFILES else 0,
-            )
+            course = sorted(COURSE_PROFILES.keys())[0]
+
+        # Warn if course couldn't be resolved
+        if detected_tournament and not detected_course:
+            st.warning(f"Could not resolve course for '{detected_tournament}'. Using fallback.")
 
         # Course info
         cp = COURSE_PROFILES.get(course, {})
