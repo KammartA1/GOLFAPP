@@ -1140,6 +1140,27 @@ COURSE_PROFILES = {
         "elevation": 500, "par": 72,
         "notes": "2026 BMW Championship, long layout, bentgrass, Midwest humidity, rewards power and precision",
     },
+    "Trump National Doral": {
+        "sg_weights": {"sg_ott": 0.24, "sg_app": 0.28, "sg_arg": 0.18, "sg_putt": 0.30},
+        "distance_bonus": 0.07, "accuracy_penalty": -0.06,
+        "bermuda_greens": True, "wind_sensitivity": 0.55,
+        "elevation": 6, "par": 72,
+        "notes": "Blue Monster — long, windy South Florida layout, water on 14 holes, Bermuda greens, rewards length and ball-striking",
+    },
+    "TPC Potomac": {
+        "sg_weights": {"sg_ott": 0.20, "sg_app": 0.28, "sg_arg": 0.20, "sg_putt": 0.32},
+        "distance_bonus": 0.03, "accuracy_penalty": -0.05,
+        "bermuda_greens": False, "wind_sensitivity": 0.25,
+        "elevation": 200, "par": 70,
+        "notes": "Tight tree-lined layout, accuracy premium, small bentgrass greens, rewards precision",
+    },
+    "Wilmington CC": {
+        "sg_weights": {"sg_ott": 0.22, "sg_app": 0.28, "sg_arg": 0.18, "sg_putt": 0.32},
+        "distance_bonus": 0.05, "accuracy_penalty": -0.04,
+        "bermuda_greens": False, "wind_sensitivity": 0.30,
+        "elevation": 300, "par": 71,
+        "notes": "Classic northeast layout, tree-lined fairways, undulating bentgrass greens, balanced SG profile",
+    },
 }
 
 
@@ -2217,6 +2238,9 @@ COURSE_COORDS = {
     "Bellerive CC": (38.611, -90.381),
     "Valhalla": (38.253, -85.520),
     "Southern Hills": (36.115, -95.959),
+    "Trump National Doral": (25.812, -80.339),
+    "TPC Potomac": (39.004, -77.167),
+    "Wilmington CC": (39.773, -75.576),
 }
 
 
@@ -3781,11 +3805,43 @@ TOURNAMENT_TO_COURSE = {
     "Hero World Challenge": "Albany GC",
     "RBC Canadian Open": "TPC Toronto",
     "Presidents Cup": "Royal Montreal",
+    "Cadillac Championship": "Trump National Doral",
+    "WGC-Cadillac Championship": "Trump National Doral",
+    "World Golf Championships-Cadillac Championship": "Trump National Doral",
+    "LIV Golf Miami": "Trump National Doral",
+    "Cognizant Classic in The Palm Beaches": "PGA National",
+    "Valspar Championship": "Innisbrook Copperhead",
+    "Myrtle Beach Classic": "TPC Myrtle Beach",
+    "ISCO Championship": "Keene Trace GC",
+    "Barracuda Championship": "Tahoe Mountain Club",
 }
 
 
+def _auto_create_course_profile(venue_name: str) -> str:
+    """Create a generic course profile from an ESPN venue name.
+
+    Used when ESPN returns a venue we don't have in COURSE_PROFILES.
+    Returns the course key added to COURSE_PROFILES.
+    """
+    clean_name = venue_name.strip()
+    if not clean_name:
+        clean_name = "Unknown Course"
+    COURSE_PROFILES[clean_name] = {
+        "sg_weights": {"sg_ott": 0.22, "sg_app": 0.28, "sg_arg": 0.20, "sg_putt": 0.30},
+        "distance_bonus": 0.04, "accuracy_penalty": -0.03,
+        "bermuda_greens": False, "wind_sensitivity": 0.35,
+        "elevation": 300, "par": 72,
+        "notes": f"Auto-detected from ESPN — {clean_name}. Generic balanced profile.",
+    }
+    return clean_name
+
+
 def _resolve_espn_to_course(event_name: str, venue_name: str = "") -> str | None:
-    """Map an ESPN event name or venue to our COURSE_PROFILES key."""
+    """Map an ESPN event name or venue to our COURSE_PROFILES key.
+
+    If no match is found but a venue_name is provided, auto-creates a generic
+    course profile so we never fall back to a wrong hardcoded schedule.
+    """
     # Direct tournament name lookup
     if event_name in TOURNAMENT_TO_COURSE:
         return TOURNAMENT_TO_COURSE[event_name]
@@ -3821,10 +3877,36 @@ def _resolve_espn_to_course(event_name: str, venue_name: str = "") -> str | None
             "birkdale": "Royal Birkdale",
             "bellerive": "Bellerive CC",
             "osprey valley": "TPC Toronto",
+            "doral": "Trump National Doral",
+            "trump national": "Trump National Doral",
+            "blue monster": "Trump National Doral",
+            "kapalua": "Kapalua Plantation",
+            "quail hollow": "Quail Hollow",
+            "colonial": "Colonial CC",
+            "muirfield": "Muirfield Village",
+            "east lake": "East Lake",
+            "craig ranch": "TPC Craig Ranch",
+            "scottsdale": "TPC Scottsdale",
+            "potomac": "TPC Potomac",
+            "wilmington": "Wilmington CC",
+            "sedgefield": "Sedgefield CC",
+            "southwind": "TPC Southwind",
+            "detroit": "Detroit GC",
+            "deere run": "TPC Deere Run",
+            "summerlin": "TPC Summerlin",
+            "sea island": "Sea Island",
+            "port royal": "Port Royal",
+            "valhalla": "Valhalla",
+            "southern hills": "Southern Hills",
+            "pinehurst": "Pinehurst No. 2",
+            "oakmont": "Oakmont CC",
+            "bethpage": "Bethpage Black",
         }
         for alias, ckey in alias_map.items():
             if alias in venue_lower:
                 return ckey
+
+        return _auto_create_course_profile(venue_name)
 
     return None
 
@@ -3877,7 +3959,6 @@ def render_sidebar() -> dict:
 
         this_week = _get_current_week_tournaments()
         if espn_course or this_week:
-            # Determine the best default course
             if espn_course and espn_course in COURSE_PROFILES:
                 quick_course = espn_course
             elif this_week:
@@ -3885,7 +3966,7 @@ def render_sidebar() -> dict:
             else:
                 quick_course = None
 
-            if this_week and not espn_course:
+            if not espn_course and this_week:
                 st.markdown("**This Week's Tournaments**")
                 week_options = []
                 for t in this_week:
